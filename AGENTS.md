@@ -21,7 +21,7 @@
 
 - Python 3.12, FastAPI, SQLAlchemy 2, Alembic, pydantic-settings
 - DB: PostgreSQL 16 (로컬은 Compose). 서버 운영 방식은 ADR-008에서 결정 전
-- 인증: 없음 (MVP에서 로그인 제외, 아래 7절)
+- 인증: 없음 (로그인 제외, 아래 7절)
 - 테스트: pytest (SQLite 메모리 DB)
 
 ## 4. 폴더 구조
@@ -58,7 +58,7 @@ alembic upgrade head
 5. **ID는 소문자·숫자·하이픈.** 앱·배포 ID가 AWS 태그(`ApplicationId`, `DeploymentId`)로 쓰일 수 있다 (ADR-005). 현재 UUID4 문자열 사용.
 6. **에러 응답 형식 통일:** `{"error": "코드", "message": "설명"}`. `HTTPException(detail={"error": ..., "message": ...})`로 던진다.
 7. **GitHub은 읽기만.** 고객 레포는 public만 대상으로 하고, 서버용 GitHub 토큰은 읽기 전용으로 환경변수에 둔다. 응답에 절대 포함하지 않는다.
-8. **로그인·회원 기능을 다시 넣지 않는다.** MVP에서 제외하기로 했다 (아래 7절). 다시 필요하면 ADR부터 갱신한다.
+8. **로그인·회원 기능을 다시 넣지 않는다.** 제외하기로 했다 (아래 7절). 다시 필요하면 ADR부터 갱신한다.
 9. **AWS 자격증명을 백엔드에 두지 않는다.** 배포 실행과 Terraform plan/apply는 GitHub Actions에서, 키는 레포 시크릿에 (2일차 회의 32:55~33:23). 백엔드가 AWS SDK로 직접 자원을 만드는 방식은 합의 전 금지.
 10. **새 기능에는 테스트를 같이 추가**하고 `pytest` 통과를 확인한다.
 11. 트레이드오프가 있는 결정은 Notion Docs & Logs에 ADR로 남긴다 (한 ADR에 질문 하나).
@@ -70,7 +70,7 @@ alembic upgrade head
 | 주제: C(Space 분리) + E(선택 이유 시각화) | 확정 | ADR-001 |
 | AWS 계정 4분리 (Management/Platform/Workload/Sandbox), 플랫폼 DB·인프라 목록은 Platform 계정 | 확정 | ADR-004 |
 | 인프라는 사전 구축, 플랫폼은 조회만 | 회의 합의 | 2일차 2:27:19 |
-| 로그인 없음 (공용 목록 + public 레포 URL 입력). 2일차 합의(GitHub OAuth)를 MVP에서 보류 | 초안 | 로그인 제외 ADR |
+| 로그인 없음 (공용 목록 + public 레포 URL 입력). 2일차 합의(GitHub OAuth)를 보류 | 초안 | ADR-011 |
 | 트리 시각화 유지, 사용자는 구성 요소 수정 불가 | 회의 합의 | 2일차 1:35:34 |
 | AI는 Terraform만 작성, 실행은 GitHub Actions, 키는 레포 시크릿 | 회의 합의 | 2일차 32:55 |
 | 플랫폼 CI/CD: Actions → ECR → S3 → SSM → EC2 Compose | 검토 중 | ADR-002 |
