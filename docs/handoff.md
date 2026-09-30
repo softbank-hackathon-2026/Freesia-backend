@@ -144,7 +144,7 @@
 - SQLAlchemy + Alembic, `users` 테이블(마이그레이션 0001)
 - GitHub OAuth 로그인(state 검증), JWT 쿠키, GitHub 토큰 Fernet 암호화 저장, `/me`, 로그아웃
 - Dockerfile(비루트 사용자, 시작 시 마이그레이션), docker-compose(백엔드 + Postgres 16, 볼륨, DB 포트 비공개)
-- pytest 10개 통과
+- pytest 14개 통과
 
 ## 8. 남은 할 일
 

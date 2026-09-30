@@ -5,6 +5,7 @@
 """
 from functools import lru_cache
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -37,6 +38,13 @@ class Settings(BaseSettings):
 
     # GitHub 액세스 토큰 암호화 키 (Fernet, base64 32바이트)
     token_encryption_key: str = ""
+
+    @model_validator(mode="after")
+    def _check_secrets(self) -> "Settings":
+        # 로컬이 아닌 환경에서 기본값·짧은 JWT 비밀키로 뜨는 것을 막는다
+        if self.app_env != "local" and (self.jwt_secret == "change-me" or len(self.jwt_secret) < 32):
+            raise ValueError("JWT_SECRET을 32자 이상의 랜덤 값으로 설정하세요 (APP_ENV가 local이 아님).")
+        return self
 
     @property
     def cors_origin_list(self) -> list[str]:

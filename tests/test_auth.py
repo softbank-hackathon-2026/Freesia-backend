@@ -83,3 +83,10 @@ def test_logout(client, monkeypatch):
 def test_error_format(client):
     body = client.get("/me").json()
     assert body == {"error": "unauthorized", "message": "로그인이 필요합니다."}
+
+
+def test_callback_cancelled(client):
+    client.get("/auth/github", follow_redirects=False)
+    r = client.get("/auth/github/callback?error=access_denied&state=x", follow_redirects=False)
+    assert r.status_code == 400
+    assert r.json()["error"] == "login_cancelled"

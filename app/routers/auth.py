@@ -31,10 +31,17 @@ def github_login() -> RedirectResponse:
 
 @router.get("/github/callback")
 def github_callback(
-    request: Request, code: str | None = None, state: str | None = None, db: Session = Depends(get_db)
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    db: Session = Depends(get_db),
 ) -> RedirectResponse:
     """GitHub에서 돌아오면 사용자 저장 후 로그인 쿠키를 발급하고 프론트로 보낸다."""
     s = get_settings()
+    if error == "access_denied":
+        # 사용자가 GitHub 권한 요청 화면에서 취소한 경우
+        raise HTTPException(400, detail={"error": "login_cancelled", "message": "GitHub 로그인이 취소되었습니다."})
     saved_state = request.cookies.get(STATE_COOKIE)
     if not code or not state or not saved_state or not secrets.compare_digest(state, saved_state):
         raise HTTPException(400, detail={"error": "invalid_state", "message": "로그인 요청이 올바르지 않습니다."})
