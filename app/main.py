@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import get_settings
-from app.routers import auth, health, me
+from app.routers import app_spaces, deployments, health, infra_spaces
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,6 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=s.cors_origin_list,
-        allow_credentials=True,  # 로그인 쿠키 전달
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -49,8 +48,9 @@ def create_app() -> FastAPI:
 
 
     app.include_router(health.router)
-    app.include_router(auth.router)
-    app.include_router(me.router)
+    app.include_router(infra_spaces.router)
+    app.include_router(app_spaces.router)
+    app.include_router(deployments.router)
     return app
 
 

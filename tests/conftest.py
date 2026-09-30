@@ -1,14 +1,9 @@
-"""테스트 공통 준비물. 실제 Postgres·GitHub 없이 돌아가도록 SQLite와 가짜 GitHub를 쓴다."""
+"""테스트 공통 준비물. 실제 Postgres 없이 돌아가도록 SQLite 메모리 DB를 쓴다."""
 import os
-
-from cryptography.fernet import Fernet
 
 # 앱을 불러오기 전에 테스트용 설정을 넣는다
 os.environ["DATABASE_URL"] = "sqlite://"
-os.environ["JWT_SECRET"] = "test-secret"
-os.environ["TOKEN_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
 os.environ["APP_VERSION"] = "test-sha"
-os.environ["FRONTEND_URL"] = "http://frontend.test"
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

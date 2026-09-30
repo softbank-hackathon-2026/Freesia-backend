@@ -6,31 +6,14 @@
 
 ```bash
 cp .env.example .env
-# .env에서 GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET / JWT_SECRET / TOKEN_ENCRYPTION_KEY 채우기
 docker compose up --build
 ```
 
 - API 문서(Swagger): http://localhost:8000/docs
 - 헬스체크: http://localhost:8000/health
 - 버전: http://localhost:8000/version.txt
-- 로그인: http://localhost:8000/auth/github → 로그인 후 `FRONTEND_URL`로 이동 → http://localhost:8000/me
 
-## GitHub OAuth App 등록
-
-1. GitHub 조직 설정 → Developer settings → OAuth Apps → New OAuth App
-2. Homepage URL: `http://localhost:5173`
-3. Authorization callback URL: `http://localhost:8000/auth/github/callback`
-4. 발급된 Client ID / Client Secret을 `.env`에 입력
-5. 서버 배포 시에는 도메인 기준 콜백 주소로 별도 OAuth App을 등록 (OAuth App은 콜백 1개)
-
-권한은 최소 권한 `read:user user:email`만 요청한다. 레포 접근 범위(public만 / private까지)는 미정.
-
-## 키 생성
-
-```bash
-python -c "import secrets; print(secrets.token_urlsafe(48))"                               # JWT_SECRET
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"   # TOKEN_ENCRYPTION_KEY
-```
+지금 인프라·앱 Space·분석·배포 API는 가짜 데이터(`app/mock_data.py`)로 응답한다. 서버를 재시작하면 만든 데이터는 사라진다.
 
 ## 테스트
 
@@ -39,7 +22,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-테스트는 SQLite 메모리 DB와 가짜 GitHub 응답을 사용하므로 Postgres·GitHub 없이 돌아간다.
+테스트는 SQLite 메모리 DB를 사용하므로 Postgres 없이 돌아간다.
 
 ## DB 마이그레이션
 
@@ -52,9 +35,9 @@ alembic upgrade head                        # 적용 (컨테이너 시작 시 �
 
 ## 프론트 연동 메모
 
-- 로그인 후 인증 토큰은 HttpOnly 쿠키(`access_token`)로 발급된다.
-- 프론트에서 API 호출 시 `fetch(url, { credentials: "include" })` 필요.
-- `Authorization: Bearer <token>` 헤더도 지원한다.
+- 로그인이 없다. 모든 API를 인증 없이 호출한다.
+- 흐름: `GET /infra-spaces` → `POST /app-spaces` → `GET /app-spaces/{id}/analysis` → `POST /app-spaces/{id}/deployments` → `GET /deployments/{id}/events`
+- 배포 진행 상황은 SSE다. `new EventSource(url)`로 연결하고 `progress` 이벤트를 받는다. 마지막 이벤트의 `status`는 `success` 또는 `failed`.
 - 에러 응답 형식: `{"error": "코드", "message": "설명"}`
 
 ## CI/CD (ADR-002) 연동 정보

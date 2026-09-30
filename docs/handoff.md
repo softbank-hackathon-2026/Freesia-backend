@@ -22,8 +22,8 @@
 | 단계 | 사용자 | 주로 일하는 파트 | 백엔드 역할 |
 |---|---|---|---|
 | 0 | - | 인프라: 샘플 인프라 사전 구축 + `InfraId` 태그 | 인프라 목록 등록 |
-| 1 | GitHub 로그인 | 백엔드 | OAuth, 사용자 저장 |
-| 2 | 앱 Space 생성 + 레포 선택 | 백엔드 | 레포 목록, Space 생성 |
+| 1 | (로그인 없음) | - | - |
+| 2 | 앱 Space 생성 + 레포 URL 입력 | 백엔드 | Space 생성 |
 | 3 | 인프라 선택 | 백엔드 | 인프라 목록 제공 |
 | 4 | 대기 | AI (Bedrock) | 코드 전달, 결과 저장 |
 | 5 | 선택 이유 트리·캐릭터 설명 확인 | 프론트 | 트리 데이터 제공 |
@@ -52,7 +52,7 @@
 ### 회의 합의 (2일차)
 - 인프라 배포 기능은 구현하지 않고 **조회만** (2:27:19)
 - 개발자는 인프라 수정 불가 (1:34:32), 맞는 인프라가 없으면 인프라 담당에 요청 (2:14:49)
-- **GitHub OAuth** 로그인 (1:55:03), 회원 역할 구분 없이 로그인 하나로 두 Space 사용 (2:13:39)
+- ~~**GitHub OAuth** 로그인 (1:55:03)~~ → 9/30 MVP에서 제외 (아래 "로그인 제외"). 회원 역할 구분 없음 (2:13:39)은 그대로
 - 트리 시각화 유지, 구성 요소 수정 불가 (1:35:34), 마스코트가 선택 이유 설명 (2:29:13)
 - **AI는 Terraform만 작성, plan/apply는 GitHub Actions, AWS 키는 레포 시크릿** (32:55~33:23, 작년 피드백 반영)
 - 모니터링: 인프라 Space는 올라간 앱 목록, 앱 Space는 메트릭·로그 (2:06:51)
@@ -66,20 +66,19 @@
 - **ADR-003 샘플 인프라 3종** (검토 중): 후보 ECS Fargate / Lambda+API GW / EC2+ALB (+S3·CloudFront, App Runner). 댓글로 "이건 인프라가 아니라 컴퓨팅 후보. 인프라는 Public/Private/HA 같은 네트워크 구조로 나누자"는 의견 → **`infra_id`(건물)와 `compute`(입점 형태) 분리** 방향
 - **ADR-005 네이밍·태깅** (제안): 이름 `sbh-<scope>-<env>-<type>-<purpose>`, 필수 태그 Name/Project/Scope/Environment/ManagedBy, 사전 구축 인프라는 `InfraId`, 앱 자원은 `ApplicationId`·`DeploymentId`
 - **ADR-006 LLM 모델·호출 방식** (강효승, 초안): Bedrock Converse API, 모델 ID를 설정값으로, 경량 모델부터 escalation
-- **ADR-007 플랫폼 DB 구성** (박태원, 초안, Decision 비움): A Compose Postgres / B RDS / C SQLite 비교. 정호원·박소정 의견 받고 결정
+- **ADR-008 플랫폼 DB 구성** (박태원, 초안, Decision 비움): A Compose Postgres / B RDS / C SQLite 비교. 정호원·박소정 의견 받고 결정
 
 ## 5. 백엔드 쪽 판단 기록 (ADR 후보)
 
 | 주제 | 현재 방향 | 이유 |
 |---|---|---|
 | 언어 | Python(FastAPI) 예정 | AI 파트와 언어 통일(백업 용이), Bedrock 라이브러리, Swagger 자동 문서 (강효승 확인 대기) |
-| 로그인 | GitHub OAuth App, scope `read:user user:email` | 회원 로그인만 필요, 가장 단순. GitHub App은 레포 권한이 필요할 때 검토 |
-| 로그인 유지 | JWT, HttpOnly 쿠키 + Bearer 지원 | 프론트 연동 단순 |
-| 레포 접근 | 미정. 시연은 public 레포면 추가 권한 불필요 | private은 `repo` scope(쓰기 권한 딸림) 또는 GitHub App |
+| 로그인 | **없음** (9/30 결정, ADR 초안) | 평가 기준에 직접 기여하지 않고 라이브 시연 단계만 늘림. 프론트 시간 절약. 코드는 git 기록(커밋 9b3c2ec까지)에 남아 있음 |
+| 레포 접근 | public 레포 URL 입력 + 서버 읽기 전용 토큰 | 로그인 없이 GitHub API 한도(비인증 시간당 60회) 해결 |
 | 배포 요청 | 백엔드 → GitHub Actions API + 콜백 추천 | 회의 합의(Actions에서 실행, 키는 시크릿)와 일치, 추가 서버 불필요, 백엔드가 AWS 권한 안 가짐 |
-| DB | ADR-007 | - |
+| DB | ADR-008 | - |
 
-추가로 쓸 만한 ADR: 회원 인증 방식, 백엔드 기술 스택, 고객 레포 접근 방식, 배포 요청 연동 방식, 인프라 목록 관리 방식(DB 등록 vs 태그 조회).
+추가로 쓸 만한 ADR: 백엔드 기술 스택, 고객 레포 접근 방식, 배포 요청 연동 방식, 인프라 목록 관리 방식(DB 등록 vs 태그 조회).
 
 ## 6. 인터페이스 초안 (합의 전)
 
@@ -91,17 +90,15 @@
 ### 프론트 ↔ 백엔드
 | 기능 | Method | 경로 | 상태 |
 |---|---|---|---|
-| GitHub 로그인 | GET | `/auth/github` | 구현됨 |
-| 로그인 콜백 | GET | `/auth/github/callback` | 구현됨 |
-| 로그아웃 | POST | `/auth/logout` | 구현됨 |
-| 내 정보 | GET | `/me` | 구현됨 |
 | 헬스체크·버전 | GET | `/health`, `/health/db`, `/version.txt` | 구현됨 |
-| 레포 목록 | GET | `/repos` | 예정 |
-| 인프라 Space 목록·상세 | GET | `/infra-spaces`, `/infra-spaces/{id}` | 예정 |
-| 앱 Space 생성·목록·상세 | POST/GET | `/app-spaces`, `/app-spaces/{id}` | 예정 |
-| AI 분석 시작·결과 | POST/GET | `/app-spaces/{id}/analysis` | 예정 |
-| 배포 시작 | POST | `/app-spaces/{id}/deployments` | 예정 |
-| 배포 진행 (SSE) | GET | `/deployments/{id}/events` | 예정 |
+| 인프라 Space 목록·상세 | GET | `/infra-spaces`, `/infra-spaces/{id}` | 가짜 데이터 |
+| 앱 Space 생성·목록·상세 | POST/GET | `/app-spaces`, `/app-spaces/{id}` | 가짜 데이터 |
+| AI 분석 시작·결과 | POST/GET | `/app-spaces/{id}/analysis` | 가짜 데이터 |
+| 배포 시작 | POST | `/app-spaces/{id}/deployments` | 가짜 데이터 |
+| 배포 상태 | GET | `/deployments/{id}` | 가짜 데이터 |
+| 배포 진행 (SSE) | GET | `/deployments/{id}/events` | 가짜 데이터 |
+
+요청·응답 형식은 `app/schemas.py`가 기준이다 (Swagger `/docs`에서 확인).
 
 분석 결과 예시:
 ```json
@@ -141,27 +138,28 @@
 
 - FastAPI 뼈대, 환경변수 설정, 공통 에러 형식, CORS
 - `/health`, `/health/db`, `/version.txt` (`GIT_SHA` 빌드 인자 → `APP_VERSION`)
-- SQLAlchemy + Alembic, `users` 테이블(마이그레이션 0001)
-- GitHub OAuth 로그인(state 검증), JWT 쿠키, GitHub 토큰 Fernet 암호화 저장, `/me`, 로그아웃
+- SQLAlchemy + Alembic (테이블은 아직 없음)
+- 가짜 데이터 API: 인프라 목록, 앱 Space, AI 분석 결과, 배포 시작, 배포 진행 SSE (`app/mock_data.py`)
+- GitHub OAuth 로그인은 만들었다가 9/30 로그인 제외 결정으로 삭제 (git 기록에 남음)
 - Dockerfile(비루트 사용자, 시작 시 마이그레이션), docker-compose(백엔드 + Postgres 16, 볼륨, DB 포트 비공개)
-- pytest 14개 통과
+- pytest 10개 통과
 
 ## 8. 남은 할 일
 
 ### 소통
-- [ ] ADR-002 스레드에 "구현 전 합의" 백엔드 답변 (pytest / Dockerfile 백엔드 작성 / `/health`·`/version.txt` 추가 / DB는 ADR-007)
+- [ ] ADR-002 스레드에 "구현 전 합의" 백엔드 답변 (pytest / Dockerfile 백엔드 작성 / `/health`·`/version.txt` 추가 / DB는 ADR-008)
 - [ ] 강효승: AI 쪽 Python 여부 확인
-- [ ] 정호원·박소정: ADR-007 의견 (RDS 추가 가능 여부, 배포 파일 구성, Parameter Store 키, `/health` DB 확인 여부)
+- [ ] 정호원·박소정: ADR-008 의견 (RDS 추가 가능 여부, 배포 파일 구성, Parameter Store 키, `/health` DB 확인 여부)
 - [ ] "CI/CD 파이프라인 - 대상 서비스" 담당·방식 확인, 백엔드 추천안(Actions API + 콜백) 공유
-- [ ] 박준서·강효승: 시연 레포 public 여부 → 레포 접근 범위 결정
-- [ ] 도메인 정해지면 OAuth 콜백 재등록
+- [ ] 박준서·강효승: 시연 레포 public으로 준비 요청
+- [ ] 프론트에 로그인 제외, 레포 URL 입력 방식 공유
+- [ ] 로그인 제외 ADR을 Notion에 올리고 회의에서 공유
 
 ### 개발
-- [ ] 로컬에서 OAuth App 등록 후 실제 로그인 확인
-- [ ] 앱 Space·인프라 Space 모델과 API
-- [ ] 레포 읽기 (접근 범위 확정 후)
+- [ ] 가짜 데이터를 실제 기능으로 교체 (앱 Space DB 저장 → 인프라 목록)
+- [ ] 레포 URL로 주요 파일 읽기 (public, 서버 토큰)
 - [ ] AI 연동 (형식 합의 후)
-- [ ] 배포 요청·콜백·SSE (파이프라인 담당 확정 후)
+- [ ] 배포 요청·콜백·SSE (파이프라인 담당 확정 후) + 비용 보호 (동시 배포 1개, 허용 레포)
 - [ ] 모니터링 조회 API
 - [ ] Swagger 주소 김동윤에게 공유
 

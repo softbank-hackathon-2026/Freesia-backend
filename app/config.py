@@ -5,7 +5,6 @@
 """
 from functools import lru_cache
 
-from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,35 +15,11 @@ class Settings(BaseSettings):
     app_env: str = "local"  # local / dev / demo / prod
     app_version: str = "dev"  # 빌드 시 커밋 SHA 주입 (/version.txt)
 
-    # DB: 서버 운영 방식은 ADR-007에서 결정. 코드는 이 값 하나로만 접속한다.
+    # DB: 서버 운영 방식은 ADR-008에서 결정. 코드는 이 값 하나로만 접속한다.
     database_url: str = "postgresql+psycopg://freesia:freesia@db:5432/freesia"
 
-    # GitHub OAuth App
-    github_client_id: str = ""
-    github_client_secret: str = ""
-    github_redirect_uri: str = "http://localhost:8000/auth/github/callback"
-    github_oauth_scope: str = "read:user user:email"
-
-    # 로그인 후 돌아갈 프론트 주소
-    frontend_url: str = "http://localhost:5173"
+    # 프론트 주소 (쉼표로 여러 개)
     cors_origins: str = "http://localhost:5173"
-
-    # 인증 토큰(JWT)
-    jwt_secret: str = "change-me"
-    jwt_algorithm: str = "HS256"
-    jwt_expires_minutes: int = 60 * 12
-    auth_cookie_name: str = "access_token"
-    cookie_secure: bool = False  # HTTPS 환경(서버)에서는 true
-
-    # GitHub 액세스 토큰 암호화 키 (Fernet, base64 32바이트)
-    token_encryption_key: str = ""
-
-    @model_validator(mode="after")
-    def _check_secrets(self) -> "Settings":
-        # 로컬이 아닌 환경에서 기본값·짧은 JWT 비밀키로 뜨는 것을 막는다
-        if self.app_env != "local" and (self.jwt_secret == "change-me" or len(self.jwt_secret) < 32):
-            raise ValueError("JWT_SECRET을 32자 이상의 랜덤 값으로 설정하세요 (APP_ENV가 local이 아님).")
-        return self
 
     @property
     def cors_origin_list(self) -> list[str]:
