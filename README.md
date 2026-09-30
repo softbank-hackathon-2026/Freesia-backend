@@ -9,9 +9,10 @@ cp .env.example .env
 docker compose up --build
 ```
 
-- API 문서(Swagger): http://localhost:8000/docs
-- 헬스체크: http://localhost:8000/health
-- 버전: http://localhost:8000/version.txt
+- 모든 API는 `/api` 아래에 있다 (인프라 라우팅 규칙: `/api`로 시작하면 백엔드).
+- API 문서(Swagger): http://localhost:8000/api/docs
+- 헬스체크: http://localhost:8000/api/health
+- 버전: http://localhost:8000/api/version.txt
 
 지금 인프라·앱 Space·분석·배포 API는 가짜 데이터(`app/mock_data.py`)로 응답한다. 서버를 재시작하면 만든 데이터는 사라진다.
 
@@ -36,17 +37,18 @@ alembic upgrade head                        # 적용 (컨테이너 시작 시 �
 ## 프론트 연동 메모
 
 - 로그인이 없다. 모든 API를 인증 없이 호출한다.
-- 흐름: `GET /infra-spaces` → `POST /app-spaces` → `GET /app-spaces/{id}/analysis` → `POST /app-spaces/{id}/deployments` → `GET /deployments/{id}/events`
-- 배포 진행 상황은 SSE다. `new EventSource(url)`로 연결하고 `progress` 이벤트를 받는다. 마지막 이벤트의 `status`는 `success` 또는 `failed`.
+- 흐름: `GET /api/infra-spaces` → `POST /api/app-spaces` → `GET /api/app-spaces/{id}/analysis` → `POST /api/app-spaces/{id}/deployments` → `GET /api/deployments/{id}/events`
+- 배포 진행 상황은 SSE다. `new EventSource(url)`로 연결하고 `progress` 이벤트를 받는다. 마지막 이벤트의 `status`는 `success` 또는 `failed`. 이벤트가 없는 동안에는 15초마다 연결 유지용 주석(`: ping`)이 오고, 다시 연결하면 현재 단계부터 이어서 받는다.
 - 에러 응답 형식: `{"error": "코드", "message": "설명"}`
 
-## CI/CD (ADR-002) 연동 정보
+## CI/CD (ADR-002, ADR-013) 연동 정보
 
 | 항목 | 값 |
 |---|---|
 | 테스트 명령 | `pytest` (이 폴더에서) |
 | Dockerfile | 이 폴더의 `Dockerfile` |
-| 커밋 SHA 주입 | `docker build --build-arg GIT_SHA=<sha> .` → `/version.txt`에 표시 |
-| 헬스체크 | `GET /health` (앱만), `GET /health/db` (DB 포함) |
+| 커밋 SHA 주입 | `docker build --build-arg GIT_SHA=<sha> .` → `/api/version.txt`에 표시 |
+| 헬스체크 | `GET /api/health` (앱만), `GET /api/health/db` (DB 포함) |
+| 마이그레이션 | `RUN_MIGRATIONS=true`(기본값, 로컬)면 컨테이너 시작 시 `alembic upgrade head`. 서버는 `false`로 두고 배포 단계 일회성 Task에서 `alembic upgrade head` 실행 |
 | 시작 명령 | `entrypoint.sh` (마이그레이션 적용 후 uvicorn 실행) |
 | 설정 | 전부 환경변수. 서버에서는 Parameter Store 값을 주입 |

@@ -11,10 +11,19 @@ from app.routers import app_spaces, deployments, health, infra_spaces
 
 logger = logging.getLogger(__name__)
 
+API_PREFIX = "/api"
+
 
 def create_app() -> FastAPI:
     s = get_settings()
-    app = FastAPI(title="Freesia Platform API", version=s.app_version)
+    # 모든 API는 /api 아래에 둔다. 인프라(CloudFront·ALB)가 "/api로 시작하면 백엔드" 한 규칙으로 라우팅한다.
+    app = FastAPI(
+        title="Freesia Platform API",
+        version=s.app_version,
+        docs_url=f"{API_PREFIX}/docs",
+        redoc_url=None,
+        openapi_url=f"{API_PREFIX}/openapi.json",
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=s.cors_origin_list,
@@ -47,10 +56,8 @@ def create_app() -> FastAPI:
         )
 
 
-    app.include_router(health.router)
-    app.include_router(infra_spaces.router)
-    app.include_router(app_spaces.router)
-    app.include_router(deployments.router)
+    for r in (health.router, infra_spaces.router, app_spaces.router, deployments.router):
+        app.include_router(r, prefix=API_PREFIX)
     return app
 
 

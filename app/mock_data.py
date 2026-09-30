@@ -38,6 +38,8 @@ INFRA_SPACES: list[InfraSpace] = [
 
 APP_SPACES: dict[str, AppSpace] = {}
 DEPLOYMENTS: dict[str, Deployment] = {}
+# 배포별로 SSE가 어디까지 보냈는지 (다시 연결하면 이어서 보내기 위함)
+PROGRESS: dict[str, int] = {}
 
 
 def now() -> datetime:

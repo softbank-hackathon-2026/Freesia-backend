@@ -20,7 +20,8 @@
 ## 3. 기술 스택
 
 - Python 3.12, FastAPI, SQLAlchemy 2, Alembic, pydantic-settings
-- DB: PostgreSQL 16 (로컬은 Compose). 서버 운영 방식은 ADR-008에서 결정 전
+- DB: PostgreSQL 16. 로컬(개발·테스트)은 Compose, 서버는 Amazon RDS Multi-AZ (ADR-008)
+- 서버 실행: ECS Fargate, Task Definition은 `.aws/task-definition.json` (ADR-002, ADR-013)
 - 인증: 없음 (로그인 제외, 아래 7절)
 - 테스트: pytest (SQLite 메모리 DB)
 
@@ -52,9 +53,10 @@ alembic upgrade head
 ## 6. 반드시 지킬 규칙
 
 1. **설정·비밀값은 전부 환경변수.** 코드·compose·문서에 비밀번호, 키, 토큰을 쓰지 않는다. `.env`는 커밋하지 않고 `.env.example`만 갱신한다. 서버 값은 Parameter Store에서 주입된다 (ADR-002).
-2. **`/health`와 `/version.txt`를 유지한다.** CI/CD 배포 성공 판정에 쓰인다 (ADR-002). `/version.txt`는 `APP_VERSION`(빌드 시 `GIT_SHA`)을 그대로 반환한다.
+2. **모든 API는 `/api` 아래에 둔다.** 인프라가 `/api`로 시작하는 요청만 백엔드로 보낸다. **`/api/health`, `/api/health/db`, `/api/version.txt`를 유지한다.** CI/CD 배포 성공 판정과 Target Group 헬스체크에 쓰인다 (ADR-002, ADR-013). `/version.txt`는 `APP_VERSION`(빌드 시 `GIT_SHA`)을 그대로 반환한다.
 3. **스키마는 Alembic 마이그레이션으로만 변경하고, 컬럼 추가 위주로 한다.** 컬럼 삭제·이름 변경 금지. 롤백 시 DB는 되돌아가지 않기 때문이다 (ADR-002).
-4. **DB 접속은 `DATABASE_URL` 하나로만.** 특정 DB(Compose/RDS/SQLite)에 묶이는 코드를 쓰지 않는다 (ADR-008 결정 전).
+4. **DB 접속은 `DATABASE_URL` 하나로만.** 특정 DB(Compose/RDS/SQLite)에 묶이는 코드를 쓰지 않는다. 서버 값은 Parameter Store `/sbh/platform/demo/backend/DATABASE_URL` (ADR-008).
+   마이그레이션은 `RUN_MIGRATIONS`로 켜고 끈다. 로컬 기본값 `true`, 서버는 `false`로 두고 배포 단계에서 한 번 실행한다 (ADR-013).
 5. **ID는 소문자·숫자·하이픈.** 앱·배포 ID가 AWS 태그(`ApplicationId`, `DeploymentId`)로 쓰일 수 있다 (ADR-005). 현재 UUID4 문자열 사용.
 6. **에러 응답 형식 통일:** `{"error": "코드", "message": "설명"}`. `HTTPException(detail={"error": ..., "message": ...})`로 던진다.
 7. **GitHub은 읽기만.** 고객 레포는 public만 대상으로 하고, 서버용 GitHub 토큰은 읽기 전용으로 환경변수에 둔다. 응답에 절대 포함하지 않는다.
@@ -73,11 +75,13 @@ alembic upgrade head
 | 로그인 없음 (공용 목록 + public 레포 URL 입력). 2일차 합의(GitHub OAuth)를 보류 | 초안 | ADR-011 |
 | 트리 시각화 유지, 사용자는 구성 요소 수정 불가 | 회의 합의 | 2일차 1:35:34 |
 | AI는 Terraform만 작성, 실행은 GitHub Actions, 키는 레포 시크릿 | 회의 합의 | 2일차 32:55 |
-| 플랫폼 CI/CD: Actions → ECR → S3 → SSM → EC2 Compose | 검토 중 | ADR-002 |
+| 플랫폼 CI/CD: Actions → ECR → ECS Fargate | 확정 | ADR-002 |
+| 백엔드 Task Definition 구성, 마이그레이션은 배포 단계 일회성 Task, Task 2개 | 제안 | ADR-013 |
 | 샘플 인프라 / 컴퓨팅 후보 (Fargate·Lambda·EC2 vs Public·Private·HA) | 검토 중 | ADR-003 |
 | AWS 리소스 네이밍·태깅 | 제안 | ADR-005 |
 | LLM 모델·호출 방식 (Bedrock) | 초안 | ADR-006 |
-| 플랫폼 DB 서버 운영 방식 | 초안 (Decision 비움) | ADR-008 |
+| 플랫폼 DB: Amazon RDS for PostgreSQL (Multi-AZ) | 확정 | ADR-008 |
+| API 경로: 모든 API를 `/api` 아래에 둠 | 허들 합의 (정호원 님) | ADR-013 |
 
 ## 8. 미정 — 합의 전에는 구현하지 말 것
 
@@ -86,7 +90,6 @@ alembic upgrade head
 - **고객 앱 배포 파이프라인**: 담당자·방식 미정 (Work Board "CI/CD 파이프라인 - 대상 서비스"). 후보: 백엔드 → GitHub Actions API(`workflow_dispatch`) + 콜백 (백엔드 추천안) / Jenkins / 백엔드 AWS SDK 직접
 - **AI 연동 방식**: AI 파트(강효승)와 요청·응답 JSON 형식 합의 필요
 - **컴퓨팅 후보 목록**: ADR-003 결론 후 `compute` 값 확정
-- **`/health`에 DB 확인 포함 여부**: 박소정과 합의 (현재 `/health`=앱만, `/health/db`=DB 포함)
 
 ## 9. 다음 작업 (백로그)
 
@@ -111,5 +114,7 @@ API 모양은 `app/schemas.py`에 있고, 지금은 `app/mock_data.py`의 가짜
 - ADR-005 https://app.notion.com/p/3eb8bee9ada4804983b7c222d1202e00
 - ADR-006 https://app.notion.com/p/3eb8bee9ada481a0b534d72e302dafcb
 - ADR-008 https://app.notion.com/p/3eb8bee9ada48001ad32ff312b10494a
+- ADR-011 https://app.notion.com/p/3eb8bee9ada481288ddacd97a6fa3e3c
+- ADR-013 https://app.notion.com/p/3eb8bee9ada4801ca590cff9c27f1d7f
 - 2일차 회의록 https://app.notion.com/p/3ea8bee9ada480739d8bf239a4d49199
 - Slack: #term1_team_freesia

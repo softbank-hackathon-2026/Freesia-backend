@@ -66,7 +66,7 @@
 - **ADR-003 샘플 인프라 3종** (검토 중): 후보 ECS Fargate / Lambda+API GW / EC2+ALB (+S3·CloudFront, App Runner). 댓글로 "이건 인프라가 아니라 컴퓨팅 후보. 인프라는 Public/Private/HA 같은 네트워크 구조로 나누자"는 의견 → **`infra_id`(건물)와 `compute`(입점 형태) 분리** 방향
 - **ADR-005 네이밍·태깅** (제안): 이름 `sbh-<scope>-<env>-<type>-<purpose>`, 필수 태그 Name/Project/Scope/Environment/ManagedBy, 사전 구축 인프라는 `InfraId`, 앱 자원은 `ApplicationId`·`DeploymentId`
 - **ADR-006 LLM 모델·호출 방식** (강효승, 초안): Bedrock Converse API, 모델 ID를 설정값으로, 경량 모델부터 escalation
-- **ADR-008 플랫폼 DB 구성** (박태원, 초안, Decision 비움): A Compose Postgres / B RDS / C SQLite 비교. 정호원·박소정 의견 받고 결정
+- **ADR-008 플랫폼 DB 구성** (박태원 님, **확정: Option B RDS for PostgreSQL Multi-AZ**). 이전 초안 메모: A Compose Postgres / B RDS / C SQLite 비교. 정호원·박소정 의견 받고 결정
 
 ## 5. 백엔드 쪽 판단 기록 (ADR 후보)
 
@@ -90,15 +90,15 @@
 ### 프론트 ↔ 백엔드
 | 기능 | Method | 경로 | 상태 |
 |---|---|---|---|
-| 헬스체크·버전 | GET | `/health`, `/health/db`, `/version.txt` | 구현됨 |
-| 인프라 Space 목록·상세 | GET | `/infra-spaces`, `/infra-spaces/{id}` | 가짜 데이터 |
-| 앱 Space 생성·목록·상세 | POST/GET | `/app-spaces`, `/app-spaces/{id}` | 가짜 데이터 |
-| AI 분석 시작·결과 | POST/GET | `/app-spaces/{id}/analysis` | 가짜 데이터 |
-| 배포 시작 | POST | `/app-spaces/{id}/deployments` | 가짜 데이터 |
-| 배포 상태 | GET | `/deployments/{id}` | 가짜 데이터 |
-| 배포 진행 (SSE) | GET | `/deployments/{id}/events` | 가짜 데이터 |
+| 헬스체크·버전 | GET | `/api/health`, `/api/health/db`, `/api/version.txt` | 구현됨 |
+| 인프라 Space 목록·상세 | GET | `/api/infra-spaces`, `/api/infra-spaces/{id}` | 가짜 데이터 |
+| 앱 Space 생성·목록·상세 | POST/GET | `/api/app-spaces`, `/api/app-spaces/{id}` | 가짜 데이터 |
+| AI 분석 시작·결과 | POST/GET | `/api/app-spaces/{id}/analysis` | 가짜 데이터 |
+| 배포 시작 | POST | `/api/app-spaces/{id}/deployments` | 가짜 데이터 |
+| 배포 상태 | GET | `/api/deployments/{id}` | 가짜 데이터 |
+| 배포 진행 (SSE) | GET | `/api/deployments/{id}/events` | 가짜 데이터 |
 
-요청·응답 형식은 `app/schemas.py`가 기준이다 (Swagger `/docs`에서 확인).
+모든 API는 `/api` 아래에 있다 (허들 합의, 정호원 님 요청). 요청·응답 형식은 `app/schemas.py`가 기준이다 (Swagger `/api/docs`에서 확인).
 
 분석 결과 예시:
 ```json

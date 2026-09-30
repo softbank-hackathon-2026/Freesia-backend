@@ -4,7 +4,7 @@ from app.main import app
 
 
 def test_validation_error_format(client):
-    r = client.post("/app-spaces", json={})
+    r = client.post("/api/app-spaces", json={})
     assert r.status_code == 422
     body = r.json()
     assert body["error"] == "validation_error"
