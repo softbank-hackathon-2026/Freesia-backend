@@ -1,0 +1,75 @@
+# 백엔드 CD (ADR-002, ADR-013): 테스트 → 이미지 빌드 → ECR 푸시(SHA 태그).
+# 배포 단계(Task Definition 등록 → 마이그레이션 → Service 업데이트)는 Task Definition 관리 방식이 정해진 뒤 추가한다.
+# ECR이 만들어지기 전까지는 수동 실행만 한다. 준비되면 push: main 트리거를 추가한다.
+name: Deploy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 배포와 롤백은 하나씩만. 진행 중인 배포는 취소하지 않는다 (ADR-002).
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-northeast-2
+  ECR_REPOSITORY: sbh-platform-dev/backend
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - run: pytest
+
+  build-push:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      digest: ${{ steps.image.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ECR 태그는 덮어쓸 수 없으므로(IMMUTABLE) 같은 SHA 이미지가 있으면 다시 빌드하지 않고 재사용한다.
+      - id: image
+        env:
+          IMAGE: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+        run: |
+          # 이미지가 없을 때(ImageNotFoundException)만 빌드한다. 권한·네트워크 등 다른 오류는 그대로 실패시킨다.
+          if ERR=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids imageTag="$GITHUB_SHA" 2>&1 >/dev/null); then
+            echo "이미 있는 이미지를 재사용합니다: $IMAGE"
+          elif echo "$ERR" | grep -q ImageNotFoundException; then
+            docker build --build-arg GIT_SHA="$GITHUB_SHA" -t "$IMAGE" .
+            docker push "$IMAGE"
+          else
+            echo "$ERR" >&2
+            exit 1
+          fi
+          DIGEST=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids imageTag="$GITHUB_SHA" \
+            --query 'imageDetails[0].imageDigest' --output text)
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "### 이미지" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 태그: \`$IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Digest: \`$DIGEST\`" >> "$GITHUB_STEP_SUMMARY"
