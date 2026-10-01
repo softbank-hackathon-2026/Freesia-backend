@@ -5,3 +5,4 @@ psycopg[binary]>=3.2
 alembic>=1.13
 pydantic-settings>=2.4
 httpx>=0.27
+boto3>=1.43.106  # Bedrock Converse JSON 스키마 출력(outputConfig.textFormat)

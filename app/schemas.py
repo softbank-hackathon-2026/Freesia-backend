@@ -99,6 +99,7 @@ class Candidate(BaseModel):
     state: CandidateState
     reason: str
     cons: list[str] = []
+    evidence_files: list[str] = Field([], description="이 후보를 판단한 근거 파일. evidence[].file 중에서 고른다 (ADR-020)")
 
 
 class Analysis(BaseModel):
