@@ -1,0 +1,182 @@
+# 백엔드 CD (ADR-002, ADR-013)
+# 테스트 → 이미지 빌드·ECR 푸시(SHA 태그) → Task Definition 등록 → 마이그레이션 Task → Service 생성/갱신 → 동작 확인.
+# Task Definition과 Service는 Terraform이 아니라 이 워크플로가 만든다 (platform-terraform env/dev/README.md).
+# 첫 배포가 성공할 때까지는 수동 실행만 한다. 성공하면 push: main 트리거를 추가한다.
+name: Deploy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 배포와 롤백은 하나씩만. 진행 중인 배포는 취소하지 않는다 (ADR-002).
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+# 아래 값은 platform-terraform(env/dev)이 만든 자원의 식별자다. 비밀값이 아니다.
+env:
+  AWS_REGION: ap-northeast-2
+  ECR_REGISTRY: 723225040786.dkr.ecr.ap-northeast-2.amazonaws.com
+  ECR_REPOSITORY: sbh-platform-dev-ecr-api
+  ECS_CLUSTER: sbh-platform-dev-ecs-api
+  ECS_SERVICE: sbh-platform-dev-ecs-api
+  CONTAINER_NAME: app
+  CONTAINER_PORT: "8000"
+  SUBNET_IDS: subnet-0e3f66a93b2c40823,subnet-06635303ea3e34dd3
+  SECURITY_GROUP_ID: sg-009da678f0be6455f
+  TARGET_GROUP_ARN: arn:aws:elasticloadbalancing:ap-northeast-2:723225040786:targetgroup/sbh-platform-dev-tg-api/0c485142dcd504e2
+  APP_URL: https://sbh.howon.me
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - run: pytest
+
+  build-push:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      digest: ${{ steps.image.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      # 같은 SHA 이미지가 있으면 다시 빌드하지 않고 재사용한다 (태그 덮어쓰기 금지, ADR-002).
+      - id: image
+        env:
+          IMAGE: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+        run: |
+          # 이미지가 없을 때(ImageNotFoundException)만 빌드한다. 권한·네트워크 등 다른 오류는 그대로 실패시킨다.
+          if ERR=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids imageTag="$GITHUB_SHA" 2>&1 >/dev/null); then
+            echo "이미 있는 이미지를 재사용합니다: $IMAGE"
+          elif echo "$ERR" | grep -q ImageNotFoundException; then
+            docker build --build-arg GIT_SHA="$GITHUB_SHA" -t "$IMAGE" .
+            docker push "$IMAGE"
+          else
+            echo "$ERR" >&2
+            exit 1
+          fi
+          DIGEST=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids imageTag="$GITHUB_SHA" \
+            --query 'imageDetails[0].imageDigest' --output text)
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "### 이미지" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 태그: \`$IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Digest: \`$DIGEST\`" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: build-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 이미지는 Digest로 고정한다. 등록할 때마다 새 revision이 생기고, 롤백은 이전 revision을 다시 적용한다.
+      - name: Task Definition 등록
+        id: taskdef
+        env:
+          IMAGE: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}@${{ needs.build-push.outputs.digest }}
+        run: |
+          jq --arg image "$IMAGE" '.containerDefinitions[0].image = $image' .aws/task-definition.json > "$RUNNER_TEMP/task-definition.json"
+          ARN=$(aws ecs register-task-definition --cli-input-json "file://$RUNNER_TEMP/task-definition.json" \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "arn=$ARN" >> "$GITHUB_OUTPUT"
+          echo "### Task Definition" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`$ARN\`" >> "$GITHUB_STEP_SUMMARY"
+
+      # 서버는 RUN_MIGRATIONS=false로 뜨므로 여기서 한 번만 실행한다. 실패하면 Service를 건드리지 않아 기존 버전이 유지된다 (ADR-013).
+      - name: DB 마이그레이션 (일회성 Task)
+        env:
+          TASK_DEF: ${{ steps.taskdef.outputs.arn }}
+          NETWORK: awsvpcConfiguration={subnets=[${{ env.SUBNET_IDS }}],securityGroups=[${{ env.SECURITY_GROUP_ID }}],assignPublicIp=DISABLED}
+        run: |
+          TASK=$(aws ecs run-task --cluster "$ECS_CLUSTER" --task-definition "$TASK_DEF" \
+            --launch-type FARGATE --count 1 --network-configuration "$NETWORK" \
+            --overrides "{\"containerOverrides\":[{\"name\":\"$CONTAINER_NAME\",\"command\":[\"alembic\",\"upgrade\",\"head\"]}]}" \
+            --started-by "deploy-$GITHUB_RUN_ID" --query 'tasks[0].taskArn' --output text)
+          if [ -z "$TASK" ] || [ "$TASK" = "None" ]; then
+            echo "마이그레이션 Task를 시작하지 못했습니다." >&2
+            exit 1
+          fi
+          aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER" --tasks "$TASK"
+          EXIT_CODE=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "마이그레이션 실패 (종료 코드: $EXIT_CODE). 로그 그룹 sbh-platform-dev-log-api를 확인하세요." >&2
+            aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK" \
+              --query 'tasks[0].[stoppedReason, containers[0].reason]' --output text >&2
+            exit 1
+          fi
+
+      # Service가 없으면 만들고(첫 배포), 있으면 새 revision으로 바꾼다. Task 수는 만들 때만 정하고 이후에는 건드리지 않는다.
+      - name: Service 생성 또는 갱신
+        env:
+          TASK_DEF: ${{ steps.taskdef.outputs.arn }}
+          NETWORK: awsvpcConfiguration={subnets=[${{ env.SUBNET_IDS }}],securityGroups=[${{ env.SECURITY_GROUP_ID }}],assignPublicIp=DISABLED}
+        run: |
+          STATUS=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+            --query 'services[0].status' --output text)
+          if [ "$STATUS" = "ACTIVE" ]; then
+            aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --task-definition "$TASK_DEF" > /dev/null
+          else
+            # 백엔드가 데이터를 메모리에 저장하는 동안은 Task 1개. DB 저장이 붙으면 2개(AZ마다 1개)로 올린다 (ADR-013).
+            aws ecs create-service --cluster "$ECS_CLUSTER" --service-name "$ECS_SERVICE" --task-definition "$TASK_DEF" \
+              --desired-count 1 --launch-type FARGATE --platform-version LATEST --network-configuration "$NETWORK" \
+              --load-balancers "targetGroupArn=$TARGET_GROUP_ARN,containerName=$CONTAINER_NAME,containerPort=$CONTAINER_PORT" \
+              --health-check-grace-period-seconds 60 \
+              --deployment-configuration "minimumHealthyPercent=100,maximumPercent=200,deploymentCircuitBreaker={enable=true,rollback=true}" \
+              --availability-zone-rebalancing ENABLED --enable-ecs-managed-tags --propagate-tags SERVICE \
+              --tags key=Name,value="$ECS_SERVICE" key=Project,value=SBH key=Scope,value=platform \
+                key=Environment,value=dev key=ManagedBy,value=github-actions key=Owner,value=박소정 > /dev/null
+          fi
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+
+      # 성공 기준 (ADR-013): 새 revision이 실제로 서비스 중이고, 공개 주소에서 헬스체크와 버전 SHA가 맞아야 한다.
+      - name: 배포 확인
+        env:
+          TASK_DEF: ${{ steps.taskdef.outputs.arn }}
+        run: |
+          # circuit breaker가 롤백하면 Service는 안정화되지만 이전 revision으로 돌아가 있다.
+          CURRENT=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+            --query "services[0].deployments[?status=='PRIMARY'] | [0].taskDefinition" --output text)
+          if [ "$CURRENT" != "$TASK_DEF" ]; then
+            echo "새 revision이 적용되지 않았습니다 (현재: $CURRENT). 롤백됐을 수 있습니다." >&2
+            exit 1
+          fi
+          for _ in $(seq 1 12); do
+            VERSION=$(curl -fsS "$APP_URL/api/version.txt" || true)
+            [ "$VERSION" = "$GITHUB_SHA" ] && break
+            sleep 10
+          done
+          if [ "$VERSION" != "$GITHUB_SHA" ]; then
+            echo "버전 불일치: 기대 $GITHUB_SHA, 실제 $VERSION" >&2
+            exit 1
+          fi
+          curl -fsS "$APP_URL/api/health"
+          curl -fsS "$APP_URL/api/health/db"
+          echo "### 배포 완료" >> "$GITHUB_STEP_SUMMARY"
+          echo "- $APP_URL/api/version.txt = \`$VERSION\`" >> "$GITHUB_STEP_SUMMARY"
