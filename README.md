@@ -1,54 +1,129 @@
 # Freesia Platform Backend
 
-원클릭 배포 플랫폼의 백엔드 (FastAPI). 에이전트용 작업 규칙은 `AGENTS.md`, 지금까지의 논의·결정 정리는 `docs/handoff.md` 참고.
+원클릭 배포 플랫폼의 백엔드(FastAPI)입니다. 직접 분석하거나 배포하지 않고, 프론트·AI·배포 워크플로를 잇는 허브입니다.
+API 계약은 [백엔드 API 명세 (Notion)](https://app.notion.com/p/3ec8bee9ada48145a459e616b692fbb1), 작업 규칙은 `AGENTS.md`, DB 설계는 `docs/erd.md`에 있습니다.
 
-## 빠른 시작 (로컬)
+## 서버
+
+| 항목 | 값 |
+|---|---|
+| API | `https://sbh.howon.me/api` (Swagger `/api/docs`) |
+| 프론트에서 백엔드 쓰기 | `https://sbh.howon.me/?source=api` (`?source=api`가 없으면 프론트 데모 모드) |
+| 배포 | `main`에 머지하면 자동 배포 (`.github/workflows/deploy.yml`, 문서만 바뀌면 제외). ECS Fargate Task 2개 |
+| DB | RDS PostgreSQL 17, 마이그레이션은 배포 단계에서 한 번 실행 (ADR-013) |
+
+## 흐름
+
+```
+① 통합       저장소 주소 등록
+② 앱 만들기  저장소 + 인프라(미리 지어 둔 것 중 선택) → 앱 ID 발급. AWS에는 아직 아무것도 안 생김
+③ AI 분석    코드를 보고 컴퓨팅 추천 (running → GET으로 다시 확인)
+④ 구성안     고른 컴퓨팅의 템플릿 + 넣을 값 (ADR-012)
+⑤ 배포       백엔드가 GitHub에 workload-deploy 워크플로 실행 요청 → 워크플로가 빌드·배포
+⑥ 진행 상황  워크플로 콜백 → DB → SSE 6단계(queued → prepare → build → deploy → verify → done), 자원별 트리
+```
+
+| 연동 대상 | 백엔드와 주고받는 것 |
+|---|---|
+| 프론트 (`Freesia-Frontend`) | 아래 API. 로그인 없음 |
+| AI (`app/ai`, 강효승 님) | 백엔드 안 함수 `run_analysis(repo_url, branch, computes)`. Bedrock 호출 |
+| 배포 워크플로 (`workload-deploy`, 박소정 님) | 백엔드 → GitHub `workflow_dispatch`. 워크플로 → 콜백, 구성안 값 조회 (`X-Hub-Signature-256` 서명) |
+
+## API
+
+🟢 진짜 데이터로 동작 · 🟡 API는 동작하지만 내용이 임시(샘플·기본값·가짜 진행) · 🟠 코드는 있지만 연결 대기
+
+| 분류 | API | 상태 | 비고 |
+|---|---|---|---|
+| 상태 확인 | `GET /api/health`, `/api/health/db`, `/api/version.txt` | 🟢 | 배포 성공 판정, Target Group 헬스체크 |
+| 저장소 | `GET` `POST /api/repositories`, `DELETE /api/repositories/{id}` | 🟢 | public GitHub 주소만, 기본 브랜치 `main` |
+| 앱 | `GET` `POST /api/app-spaces`, `GET /api/app-spaces/{id}` | 🟢 | 당분간 등록 안 된 저장소도 받음 |
+| 인프라 | `GET /api/infra-spaces`, `/api/infra-spaces/{id}` | 🟡 | 3개 중 퍼블릭만 실제 값. `deployable_computes`로 배포 가능 컴퓨팅 표시 |
+| AI 분석 | `POST` `GET /api/app-spaces/{id}/analysis` | 🟡 | `AI_MODEL_ID`가 없으면 샘플 결과 |
+| 구성안 | `POST /api/app-spaces/{id}/plans`, `GET ...?compute=` | 🟡 | 지금 값은 템플릿 기본값 |
+| 배포 | `POST /api/app-spaces/{id}/deployments` | 🟡 | `DEPLOY_SIMULATE=true`라 가짜 진행(약 8초) |
+| | `GET /api/deployments/{id}`, `/events` (SSE) | 🟡 | 가짜 진행 결과 |
+| | `GET /api/deployments/{id}/resources` | 🟠 | 콜백이 와야 채워짐 |
+| 워크플로 전용 | `POST /api/deployments/{id}/callback` | 🟠 | 서버에 서명 키 연결 전이라 모두 401 |
+| | `GET /api/plans/{plan_id}` | 🟠 | 같은 이유로 401 |
+
+에러는 모두 `{"error": "코드", "message": "설명"}`입니다. 요청·응답 모양은 Swagger와 Notion 명세를 봐 주세요.
+
+## 폴더 구조
+
+```
+app/
+  main.py            앱 생성, CORS, 공통 에러 형식
+  config.py          환경변수 설정
+  db.py              DB 연결 (DATABASE_URL 하나)
+  schemas.py         API 요청·응답 형식 (프론트·AI·워크플로와의 계약)
+  ids.py             ID·시각 생성
+  catalog.py         배포 템플릿 목록과 값 범위 (배포 레포 templates/와 맞춤, ready 스위치)
+  analysis.py        AI 분석 실행·저장 (백그라운드, running 멈춤 방지)
+  deploy.py          배포 진행 기록 (콜백과 가짜 진행이 함께 씀)
+  signing.py         워크플로가 부르는 API의 서명 확인
+  mock_data.py       샘플 분석 결과 (모델 연결 전)
+  ai/                AI 분석 모듈 (강효승 님): 저장소 읽기 repo.py, 모델 호출·검증 analyze.py
+  models/            SQLAlchemy 모델: repositories, infra_spaces, app_spaces, analyses, plans, deployments
+  routers/           API: health, repositories, infra_spaces, app_spaces, deployments, plans
+alembic/versions/    마이그레이션 0001~0004
+tests/               pytest (SQLite 메모리 DB)
+.github/workflows/   ci.yml (PR·main 검사), deploy.yml (main 머지 시 배포)
+.aws/                task-definition.json (서버 환경변수·비밀값 연결)
+docs/                erd.md, handoff.md
+```
+
+## 환경변수
+
+`.env.example`을 복사해 씁니다. 서버는 `.aws/task-definition.json`의 `environment`와 `secrets`(Parameter Store)로 넣습니다. 비밀값은 코드·`.env`에 커밋하지 않습니다.
+
+| 이름 | 기본값 | 설명 |
+|---|---|---|
+| `DATABASE_URL` | 로컬 Compose Postgres | 서버는 Parameter Store `/sbh/platform/demo/backend/DATABASE_URL` |
+| `RUN_MIGRATIONS` | `true` | 시작할 때 마이그레이션. 서버는 `false` |
+| `CORS_ORIGINS` | `http://localhost:5173` | 쉼표로 여러 개 |
+| `APP_VERSION` | `dev` | 빌드 때 커밋 SHA (`/api/version.txt`) |
+| `DEPLOY_SIMULATE` | `true` | `true`면 워크플로 대신 가짜 진행 |
+| `DEPLOY_CALLBACK_SECRET` | 빈 값 | 콜백·값 조회 서명 키. 비어 있으면 모두 401 |
+| `AI_MODEL_ID` | 빈 값 | 비어 있으면 분석은 샘플 결과 |
+| `AI_AWS_REGION`, `AI_TIMEOUT_SECONDS`, `AI_SCHEMA_OUTPUT` | `ap-northeast-2`, `60`, `true` | AI 호출 설정 |
+
+## 로컬 실행·테스트
 
 ```bash
 cp .env.example .env
-docker compose up --build
-```
+docker compose up --build        # 백엔드 + Postgres, http://localhost:8000/api/docs
 
-- 모든 API는 `/api` 아래에 있다 (인프라 라우팅 규칙: `/api`로 시작하면 백엔드).
-- API 문서(Swagger): http://localhost:8000/api/docs
-- 헬스체크: http://localhost:8000/api/health
-- 버전: http://localhost:8000/api/version.txt
-
-지금 인프라·앱 Space·분석·배포 API는 가짜 데이터(`app/mock_data.py`)로 응답한다. 서버를 재시작하면 만든 데이터는 사라진다.
-
-## 테스트
-
-```bash
 pip install -r requirements-dev.txt
-pytest
+pytest                           # SQLite 메모리 DB, Postgres 없이 실행
 ```
 
-테스트는 SQLite 메모리 DB를 사용하므로 Postgres 없이 돌아간다.
+CI는 PR마다 `pytest`, PostgreSQL 17 마이그레이션 올리기·내리기, Docker 빌드를 확인합니다.
 
 ## DB 마이그레이션
 
 ```bash
-alembic revision --autogenerate -m "설명"   # 모델 변경 후 마이그레이션 생성
-alembic upgrade head                        # 적용 (컨테이너 시작 시 자동 실행)
+alembic revision --autogenerate -m "설명"
+alembic upgrade head
 ```
 
-스키마는 컬럼 추가 위주로만 변경한다. 삭제·이름 변경은 해커톤 기간에 피한다 (ADR-002 롤백 호환).
+- 컬럼은 추가만 합니다. 삭제·이름 변경은 하지 않습니다 (롤백해도 DB는 되돌아가지 않음).
+- 서버에 적용된 마이그레이션 파일은 고치지 않습니다. 데이터를 바꿀 때도 새 파일을 만듭니다.
 
-## 프론트 연동 메모
+## 머지할 때 주의
 
-- 로그인이 없다. 모든 API를 인증 없이 호출한다.
-- 흐름: `POST /api/repositories` (통합: 저장소 등록) → `GET /api/infra-spaces` → `POST /api/app-spaces` → `GET /api/app-spaces/{id}/analysis` → `POST /api/app-spaces/{id}/deployments` → `GET /api/deployments/{id}/events`
-- 배포 진행 상황은 SSE다. `new EventSource(url)`로 연결하고 `progress` 이벤트를 받는다. 마지막 이벤트의 `status`는 `success` 또는 `failed`. 이벤트가 없는 동안에는 15초마다 연결 유지용 주석(`: ping`)이 오고, 다시 연결하면 현재 단계부터 이어서 받는다.
-- 에러 응답 형식: `{"error": "코드", "message": "설명"}`
+- **머지하면 바로 서버에 배포됩니다.** 시연 직전에는 머지하지 않습니다.
+- Task Definition에 새 `secrets`를 넣는 PR은 **실행 역할 권한이 먼저 추가된 뒤에** 머지합니다. 순서가 바뀌면 새 버전이 뜨지 않습니다 (자동 롤백으로 이전 버전은 유지).
 
-## CI/CD (ADR-002, ADR-013) 연동 정보
+## 진행 상황
 
-| 항목 | 값 |
-|---|---|
-| 테스트 명령 | `pytest` (이 폴더에서) |
-| Dockerfile | 이 폴더의 `Dockerfile` |
-| 커밋 SHA 주입 | `docker build --build-arg GIT_SHA=<sha> .` → `/api/version.txt`에 표시 |
-| 헬스체크 | `GET /api/health` (앱만), `GET /api/health/db` (DB 포함) |
-| 마이그레이션 | `RUN_MIGRATIONS=true`(기본값, 로컬)면 컨테이너 시작 시 `alembic upgrade head`. 서버는 `false`로 두고 배포 단계 일회성 Task에서 `alembic upgrade head` 실행 |
-| 시작 명령 | `entrypoint.sh` (마이그레이션 적용 후 uvicorn 실행) |
-| 설정 | 전부 환경변수. 서버에서는 Parameter Store 값을 주입 |
+- [x] 저장소·앱·인프라·분석·구성안·배포 DB 저장, 서버 Task 2개
+- [x] 콜백·자원별 상태·워크플로 값 조회 API (서명 확인)
+- [x] AI 분석 모듈 연결 (모델 없으면 샘플)
+- [x] 프론트 연동 확인 (`?source=api`, 저장소 등록 → 배포 완료까지)
+- [ ] 서명 키·GitHub 토큰 Task Definition 연결 (정호원 님 권한 작업 후)
+- [ ] 워크플로 실행(`workflow_dispatch`)과 가짜 진행 끄기
+- [ ] AI 모델 연결, AI가 구성안 값 채우기 (강효승 님)
+- [ ] 나머지 인프라 2종 실제 값 (박준서 님)
+- [ ] 가짜 진행이 서버 교체로 멈추지 않게, 30분 시간 초과
+- [ ] 배포 내리기 API, 모니터링(지표·로그) API
