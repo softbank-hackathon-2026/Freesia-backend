@@ -35,6 +35,7 @@ app/
   schemas.py       API 요청·응답 형식 (프론트·AI와 맞추는 계약)
   mock_data.py     가짜 데이터. 실제 기능이 붙으면 하나씩 대체한다
   ids.py           ID·시각 생성 (가짜 데이터와 DB 코드가 함께 씀)
+  ai/              AI 분석: 저장소 읽기(repo.py), 모델 호출·검증(analyze.py). 담당 강효승
   models/          SQLAlchemy 모델 (repositories)
   routers/         API (health, infra_spaces, repositories, app_spaces, deployments)
 alembic/           마이그레이션

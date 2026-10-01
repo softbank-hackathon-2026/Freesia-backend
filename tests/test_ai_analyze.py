@@ -1,0 +1,125 @@
+"""분석 흐름(1·2단계)과 검증 규칙. 저장소 읽기와 모델 호출은 바꿔 끼운다."""
+import json
+
+import pytest
+
+from app.ai import analyze
+from app.ai.analyze import FAIL_MESSAGE, NO_DOCKERFILE_MESSAGE, run_analysis
+from app.ai.repo import RepoError
+
+URL = "https://github.com/org/app"
+SHA = "a" * 40
+COMPUTES = ["ecs-fargate", "lambda", "ec2"]
+FILES = {"Dockerfile": "FROM node:20", "package.json": "{}", "README.md": "# app", "src/index.js": "app.listen(3000)"}
+
+
+def cand(compute, state, files=()):
+    return {"compute": compute, "state": state, "reason": "이유", "cons": ["단점"], "evidence_files": list(files)}
+
+
+def output(**over) -> str:
+    base = {
+        "status": "done",
+        "requirements": ["Node.js 20"],
+        "evidence": [{"file": "Dockerfile", "finding": "컨테이너로 실행", "certain": True}],
+        "candidates": [cand("ecs-fargate", "selected", ["Dockerfile"]), cand("lambda", "alternative"), cand("ec2", "unsuitable")],
+        "mascot_message": "Fargate를 추천해요",
+        "needs_full_code": False,
+    }
+    return json.dumps({**base, **over}, ensure_ascii=False)
+
+
+@pytest.fixture
+def repo_files(monkeypatch):
+    files = dict(FILES)
+    monkeypatch.setattr(analyze, "fetch_repo", lambda url, branch: (SHA, files))
+    return files
+
+
+@pytest.fixture
+def model(monkeypatch):
+    """model(답1, 답2, ...)로 모델 응답을 정하고, 모델이 받은 프롬프트 목록을 돌려준다."""
+    prompts: list[str] = []
+
+    def set_replies(*replies):
+        it = iter(replies)
+        monkeypatch.setattr(analyze, "_converse", lambda system, user: (prompts.append(user), next(it))[1])
+        return prompts
+
+    return set_replies
+
+
+def test_stage1_only(repo_files, model):
+    prompts = model(f"```json\n{output()}\n```")  # 울타리를 붙여도 JSON만 꺼낸다
+    result, sha = run_analysis(URL, "main", COMPUTES)
+    assert (result.status, sha, len(prompts)) == ("done", SHA, 1)
+    assert 'path="Dockerfile"' in prompts[0] and "src/index.js" not in prompts[0]
+    assert result.candidates[0].evidence_files == ["Dockerfile"]
+    assert "needs_full_code" not in result.model_dump()
+
+
+def test_stage2_when_model_needs_full_code(repo_files, model):
+    evidence = [{"file": "src/index.js", "finding": "3000 포트", "certain": True}]
+    stage2 = output(evidence=evidence, candidates=[cand("ecs-fargate", "selected", ["src/index.js"]), cand("lambda", "alternative"), cand("ec2", "unsuitable")])
+    prompts = model(output(needs_full_code=True), stage2)
+    result, _ = run_analysis(URL, "main", COMPUTES)
+    assert len(prompts) == 2 and 'path="src/index.js"' in prompts[1]
+    assert result.evidence[0].file == "src/index.js"
+
+
+def test_stage2_failure_keeps_stage1(repo_files, model):
+    model(output(needs_full_code=True), "형식이 틀린 응답")
+    result, _ = run_analysis(URL, "main", COMPUTES)
+    assert result.status == "done" and result.evidence[0].file == "Dockerfile"
+
+
+def test_no_dockerfile_skips_model(repo_files, model):
+    del repo_files["Dockerfile"]
+    prompts = model()
+    result, sha = run_analysis(URL, "main", COMPUTES)
+    assert (result.status, result.mascot_message, sha, prompts) == ("failed", NO_DOCKERFILE_MESSAGE, SHA, [])
+
+
+def test_repo_error_is_failed(monkeypatch):
+    def broken(url, branch):
+        raise RepoError("저장소나 브랜치를 찾을 수 없어요.")
+
+    monkeypatch.setattr(analyze, "fetch_repo", broken)
+    result, sha = run_analysis(URL, "main", COMPUTES)
+    assert (result.status, result.mascot_message, sha) == ("failed", "저장소나 브랜치를 찾을 수 없어요.", None)
+
+
+def test_model_says_failed(repo_files, model):
+    model(output(status="failed", requirements=[], evidence=[], candidates=[], mascot_message="웹 앱이 아니에요"))
+    result, _ = run_analysis(URL, "main", COMPUTES)
+    assert (result.status, result.mascot_message) == ("failed", "웹 앱이 아니에요")
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"candidates": [cand("ecs-fargate", "selected"), cand("lambda", "alternative")]},  # V2·V3 ec2 빠짐
+        {"candidates": [cand("lambda", "alternative"), cand("ecs-fargate", "selected"), cand("ec2", "unsuitable")]},  # V4
+        {"candidates": [cand("ecs-fargate", "selected"), cand("lambda", "unsuitable"), cand("ec2", "unsuitable")]},  # V5
+        {"evidence": [{"file": "secret.txt", "finding": "f", "certain": True}], "candidates": [cand("ecs-fargate", "selected"), cand("lambda", "alternative"), cand("ec2", "unsuitable")]},  # V6
+        {"candidates": [cand("ecs-fargate", "selected", ["README.md"]), cand("lambda", "alternative"), cand("ec2", "unsuitable")]},  # V7
+        {"status": "failed"},  # V8 failed인데 후보가 있음
+        {"evidence": [], "candidates": [cand("ecs-fargate", "selected"), cand("lambda", "alternative"), cand("ec2", "unsuitable")]},  # V9
+        {"status": "running"},  # V1
+    ],
+)
+def test_validation_violation_is_failed(repo_files, model, over):
+    model(output(**over))
+    result, _ = run_analysis(URL, "main", COMPUTES)
+    assert (result.status, result.mascot_message, result.candidates) == ("failed", FAIL_MESSAGE, [])
+
+
+def test_bedrock_error_is_failed(repo_files, monkeypatch):
+    from botocore.exceptions import ClientError
+
+    def denied(system, user):
+        raise ClientError({"Error": {"Code": "AccessDeniedException", "Message": "no"}}, "Converse")
+
+    monkeypatch.setattr(analyze, "_converse", denied)
+    result, _ = run_analysis(URL, "main", COMPUTES)
+    assert (result.status, result.mascot_message) == ("failed", FAIL_MESSAGE)
