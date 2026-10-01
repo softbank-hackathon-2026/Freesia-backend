@@ -2,12 +2,13 @@
 import logging
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import get_settings
-from app.routers import app_spaces, deployments, health, infra_spaces
+from app.routers import app_spaces, deployments, health, infra_spaces, repositories
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,10 @@ def create_app() -> FastAPI:
     async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
         return JSONResponse(
             status_code=422,
-            content={"error": "validation_error", "message": "요청 값이 올바르지 않습니다.", "details": exc.errors()},
+            # 직접 만든 검증(ValueError)은 errors()에 예외 객체가 들어 있어 JSON으로 바꿔 준다
+            content=jsonable_encoder(
+                {"error": "validation_error", "message": "요청 값이 올바르지 않습니다.", "details": exc.errors()}
+            ),
         )
 
     @app.exception_handler(Exception)
@@ -56,7 +60,7 @@ def create_app() -> FastAPI:
         )
 
 
-    for r in (health.router, infra_spaces.router, app_spaces.router, deployments.router):
+    for r in (health.router, infra_spaces.router, repositories.router, app_spaces.router, deployments.router):
         app.include_router(r, prefix=API_PREFIX)
     return app
 
