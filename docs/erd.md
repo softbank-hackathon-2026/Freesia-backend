@@ -55,10 +55,9 @@ erDiagram
         varchar app_space_id FK
         varchar commit_sha "분석한 코드 버전"
         varchar infra_id "추천 기준 인프라"
-        varchar status "pending / running / done / failed"
-        int stage "1 또는 2단계"
+        varchar status "running / done / failed"
         json result "AI 응답 전체"
-        varchar model_id
+        varchar model_id "샘플이면 sample"
         timestamptz created_at
         timestamptz finished_at
     }
@@ -118,7 +117,7 @@ erDiagram
 | `infra_spaces` | 미리 지어 둔 인프라 3종. 계정·VPC·서브넷은 배포용 내부 값이라 API 응답에 안 나감 | 마이그레이션 0002 (박준서 님 구축 값) | **구현됨** (퍼블릭만 실제 값) |
 | `repositories` | 통합 메뉴에서 등록한 GitHub 저장소. 코드는 저장 안 함 | 사용자 (`POST /api/repositories`) | **구현됨** |
 | `app_spaces` | 사용자가 만든 앱 = 저장소 하나 + 인프라 하나 | 사용자 (`POST /api/app-spaces`) | **구현됨** |
-| `analyses` | AI 견적. 어느 코드 버전(`commit_sha`), 어느 인프라 기준인지 함께 남김 | 백엔드 + AI | 설계만 (강효승 님 AI 연결 때) |
+| `analyses` | AI 견적. 어느 코드 버전(`commit_sha`), 어느 인프라 기준인지 함께 남김 | 백엔드 + AI (`app/ai`) | **구현됨** (모델 연결 전에는 샘플 결과) |
 | `plans` | AI가 고른 템플릿 + 채운 값. 워크플로가 `plan_id`로 받아 감 | 백엔드 + AI | 설계만 (API 명세 8절) |
 | `deployments` | 배포 버튼 한 번에 한 줄. 상태, 앱 주소, 실패 이유 | 백엔드 + 배포 워크플로 콜백 | **구현됨** |
 | `deployment_events` | 배포 진행 단계. SSE가 다시 연결되면 `seq` 다음부터 보냄 | 배포 워크플로 콜백 (연결 전에는 가짜 진행) | **구현됨** |
@@ -171,18 +170,17 @@ erDiagram
 | `latest_deployment_id` | varchar(32) | | | 최근 배포 (`deployments.id`) |
 | `created_at` | timestamptz | | O | |
 
-### analyses (AI 견적) · 설계만
+### analyses (AI 견적) · 구현됨
 
 | 칸 | 타입 | 키 | 필수 | 설명 |
 |---|---|---|---|---|
-| `id` | varchar | PK | O | |
-| `app_space_id` | varchar | FK → app_spaces | O | 어느 앱의 견적인지 |
-| `commit_sha` | varchar | | O | 분석한 코드 버전. 배포 때 같은 커밋을 쓴다 |
-| `infra_id` | varchar | | O | 추천 기준이 된 인프라 (ADR-020) |
-| `status` | varchar | | O | `pending` / `running` / `done` / `failed` |
-| `stage` | int | | | 1단계에서 끝났으면 1, 전체 코드까지 읽었으면 2 (ADR-019) |
-| `result` | json | | | AI 응답 전체. 형식이 아직 바뀌는 중이라 통째로 저장 |
-| `model_id` | varchar | | | 사용한 Bedrock 모델 (ADR-006) |
+| `id` | varchar(32) | PK | O | 예: `ana-1a2b3c4d5e6f` |
+| `app_space_id` | varchar(32) | FK → app_spaces | O | 어느 앱의 견적인지. 여러 번 분석할 수 있고 최신 것을 보여 준다 |
+| `infra_id` | varchar(64) | | O | 추천 기준이 된 인프라 (ADR-020). 이 인프라의 `computes` 안에서 후보를 고른다 |
+| `commit_sha` | varchar(40) | | | 분석한 코드 버전. 배포 때 같은 커밋을 쓴다. 저장소를 못 읽었거나 샘플이면 비어 있다 |
+| `status` | varchar(20) | | O | `running` / `done` / `failed`. 3분 넘게 `running`이면 조회할 때 `failed`로 바꾼다 |
+| `result` | json | | | AI 응답 전체(`Analysis`). 형식이 아직 바뀌는 중이라 통째로 저장 |
+| `model_id` | varchar(200) | | O | 사용한 Bedrock 모델 (ADR-006). 모델 없이 샘플을 준 경우 `sample` |
 | `created_at` | timestamptz | | O | |
 | `finished_at` | timestamptz | | | |
 

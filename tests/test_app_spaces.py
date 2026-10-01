@@ -91,13 +91,6 @@ def test_unknown_app_space(client):
     assert client.get("/api/app-spaces/nope").json()["error"] == "app_space_not_found"
 
 
-def test_analysis_is_still_sample(client):
-    space = create_space(client).json()
-    analysis = client.get(f"/api/app-spaces/{space['id']}/analysis").json()
-    assert analysis["status"] == "done"
-    assert {c["state"] for c in analysis["candidates"]} == {"selected", "alternative", "unsuitable"}
-
-
 def test_old_paths_are_not_served(client):
     assert client.get("/health").status_code == 404
     assert client.get("/api/docs").status_code == 200
