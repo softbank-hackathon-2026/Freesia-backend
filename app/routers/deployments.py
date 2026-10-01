@@ -1,7 +1,5 @@
 """배포 조회, 진행 상황 SSE, 워크플로 콜백, 트리용 자원 목록 (API 명세 9절, ADR-009)."""
 import asyncio
-import hashlib
-import hmac
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
@@ -11,8 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import db as db_module
-from app import deploy, models
-from app.config import get_settings
+from app import deploy, models, signing
 from app.db import get_db
 from app.schemas import Deployment, DeploymentCallback, DeploymentEvent, DeploymentResource
 
@@ -116,14 +113,6 @@ async def _raw_body(request: Request) -> bytes:
     return await request.body()
 
 
-def _signature_ok(body: bytes, signature: str | None) -> bool:
-    secret = get_settings().deploy_callback_secret
-    if not secret or not signature:
-        return False
-    expected = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, signature)
-
-
 @router.post(
     "/{deployment_id}/callback",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -144,8 +133,7 @@ def deployment_callback(
     `409`는 "무시했다"는 뜻이라 워크플로가 다시 보내지 않아도 된다.
     """
     # 서명이 맞기 전에는 배포가 있는지도 알려 주지 않는다
-    if not _signature_ok(body, signature):
-        raise HTTPException(401, detail={"error": "invalid_signature", "message": "서명이 올바르지 않습니다."})
+    signing.verify(body, signature)
     try:
         cb = DeploymentCallback.model_validate_json(body)
     except ValidationError as e:

@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import models
+from app import catalog, models
 from app.db import get_db
 from app.schemas import InfraSpace
 
@@ -21,6 +21,7 @@ def _to_schema(infra: models.InfraSpace, app_count: int) -> InfraSpace:
         network=infra.network,
         computes=infra.computes,
         app_count=app_count,
+        deployable_computes=[c for c in infra.computes if catalog.is_ready(c)],
     )
 
 

@@ -48,7 +48,7 @@ def callback(client, dep_id, body, secret=SECRET):
 
 
 def test_simulated_deployment_is_saved(client):
-    r = start(client, plan_id="plan-123")
+    r = start(client)
     assert r.status_code == 201
     dep = r.json()
     assert dep["id"].startswith("dep-")

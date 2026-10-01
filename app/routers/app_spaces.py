@@ -3,13 +3,34 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import analysis, deploy, models
+from app import analysis, catalog, deploy, models
 from app.config import get_settings
 from app.db import get_db
 from app.ids import new_id, now
-from app.schemas import Analysis, AppSpace, AppSpaceCreate, Deployment, DeploymentCreate
+from app.schemas import (
+    Analysis,
+    AppSpace,
+    AppSpaceCreate,
+    Compute,
+    Deployment,
+    DeploymentCreate,
+    PlanCreate,
+    PlanSet,
+)
 
 router = APIRouter(prefix="/app-spaces", tags=["app-spaces"])
+
+
+def check_compute(infra: models.InfraSpace, compute: str) -> None:
+    """인프라가 지원하고, 배포 템플릿도 준비된 컴퓨팅인지 (ADR-012, catalog.py)."""
+    if compute not in infra.computes:
+        raise HTTPException(
+            400, detail={"error": "compute_not_supported", "message": "선택한 인프라에서 지원하지 않는 컴퓨팅입니다."}
+        )
+    if not catalog.is_ready(compute):
+        raise HTTPException(
+            400, detail={"error": "compute_not_ready", "message": "이 컴퓨팅은 배포 템플릿을 준비 중입니다."}
+        )
 
 
 def find_app_space(db: Session, app_space_id: str) -> models.AppSpace:
@@ -101,11 +122,15 @@ def create_deployment(
     배포 레포 연결 전(DEPLOY_SIMULATE=true)에는 워크플로 대신 가짜 진행을 DB에 기록한다.
     """
     space = find_app_space(db, app_space_id)
-    infra = db.get(models.InfraSpace, space.infra_id)
-    if body.compute not in infra.computes:
-        raise HTTPException(
-            400, detail={"error": "compute_not_supported", "message": "선택한 인프라에서 지원하지 않는 컴퓨팅입니다."}
-        )
+    check_compute(db.get(models.InfraSpace, space.infra_id), body.compute)
+    if body.plan_id is not None:
+        plan = db.get(models.Plan, body.plan_id)
+        if plan is None:
+            raise HTTPException(400, detail={"error": "plan_not_found", "message": "없는 구성안입니다."})
+        if plan.app_space_id != space.id or plan.compute != body.compute:
+            raise HTTPException(
+                400, detail={"error": "plan_mismatch", "message": "이 앱과 컴퓨팅의 구성안이 아닙니다."}
+            )
     in_progress = db.scalar(
         select(models.Deployment).where(
             models.Deployment.app_space_id == space.id, models.Deployment.status.not_in(deploy.FINISHED)
@@ -132,3 +157,50 @@ def create_deployment(
     if get_settings().deploy_simulate:
         background.add_task(deploy.simulate, dep.id)
     return dep
+
+
+def _plan_set(compute: str, plans: list[models.Plan]) -> PlanSet:
+    return PlanSet(compute=compute, plans=plans)
+
+
+@router.post("/{app_space_id}/plans", response_model=PlanSet, summary="구성안 만들기")
+def create_plan(app_space_id: str, body: PlanCreate, db: Session = Depends(get_db)) -> PlanSet:
+    """고른 컴퓨팅의 템플릿과 넣을 값(구성안)을 만든다. 구성안은 1개다 (ADR-012).
+
+    지금은 템플릿 기본값으로 채운다. AI가 값을 채우게 되면 같은 응답 모양으로 값만 바뀐다.
+    """
+    space = find_app_space(db, app_space_id)
+    check_compute(db.get(models.InfraSpace, space.infra_id), body.compute)
+    template = catalog.TEMPLATES[body.compute]
+    latest = analysis.latest(db, space.id)
+    plan = models.Plan(
+        id=new_id("plan"),
+        app_space_id=space.id,
+        analysis_id=latest.id if latest is not None and latest.status == "done" else None,
+        compute=body.compute,
+        template=template.name,
+        values=catalog.fill_values(body.compute),
+        name=template.plan_name,
+        summary=template.summary,
+        pros=template.pros,
+        cons=template.cons,
+        created_at=now(),
+    )
+    db.add(plan)
+    db.commit()
+    return _plan_set(body.compute, [plan])
+
+
+@router.get("/{app_space_id}/plans", response_model=PlanSet, summary="구성안 보기")
+def get_plans(app_space_id: str, compute: Compute, db: Session = Depends(get_db)) -> PlanSet:
+    """그 컴퓨팅으로 가장 최근에 만든 구성안. 만든 적이 없으면 404."""
+    find_app_space(db, app_space_id)
+    plan = db.scalar(
+        select(models.Plan)
+        .where(models.Plan.app_space_id == app_space_id, models.Plan.compute == compute)
+        .order_by(models.Plan.created_at.desc())
+        .limit(1)
+    )
+    if plan is None:
+        raise HTTPException(404, detail={"error": "plan_not_found", "message": "아직 만든 구성안이 없습니다."})
+    return _plan_set(compute, [plan])
