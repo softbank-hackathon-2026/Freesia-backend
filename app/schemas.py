@@ -1,7 +1,7 @@
 """API 요청·응답 형식. 프론트(김동윤)·AI(강효승)와 합의할 계약 초안이다."""
 import re
 from datetime import datetime, timezone
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
@@ -52,8 +52,11 @@ class InfraSpace(BaseModel):
     name: str = Field(examples=["공개 웹 서비스용"])
     description: str
     network: Literal["public", "private", "ha"]
-    computes: list[str] = Field(description="이 인프라에 올릴 수 있는 컴퓨팅 (입점 형태)")
+    computes: list[str] = Field(description="이 인프라에 올릴 수 있는 컴퓨팅 (입점 형태). AI가 이 안에서 후보를 고른다")
     app_count: int = Field(description="이 인프라에 올라간 앱 수")
+    deployable_computes: list[str] = Field(
+        description="computes 중 배포 템플릿이 준비돼 지금 배포할 수 있는 것. 나머지는 화면에 '준비 중'으로 보인다"
+    )
 
 
 class RepositoryCreate(BaseModel):
@@ -120,6 +123,51 @@ class Analysis(BaseModel):
     evidence: list[Evidence] = []
     candidates: list[Candidate] = []
     mascot_message: str | None = Field(None, description="마스코트가 말할 한 줄 설명")
+
+
+class PlanCreate(BaseModel):
+    compute: Compute
+
+
+class Plan(BaseModel):
+    """구성안: 템플릿 하나와 거기에 넣을 값 (API 명세 8절, ADR-012 Option B)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str = Field(examples=["plan-51c0e7a9d2f1"])
+    name: str = Field(examples=["기본형"])
+    summary: str
+    pros: list[str]
+    cons: list[str]
+    template: str = Field(examples=["ecs-fargate/basic"], description="배포 레포 templates/ 아래 폴더 이름")
+    values: dict[str, Any] = Field(
+        examples=[{"container_port": 80, "cpu": 256, "memory": 512, "health_check_path": "/"}],
+        description="템플릿에 넣을 값. 템플릿마다 다르다",
+    )
+
+
+class PlanSet(BaseModel):
+    status: Literal["done"] = "done"
+    compute: Compute
+    plans: list[Plan]
+
+
+class PlanInfra(BaseModel):
+    """워크플로가 앱을 올릴 인프라 값 (DB의 인프라 정보)."""
+
+    id: str
+    vpc_id: str | None
+    public_subnet_ids: list[str]
+    private_subnet_ids: list[str]
+
+
+class WorkflowPlan(BaseModel):
+    """배포 워크플로가 plan_id로 받아 가는 값 (API 명세 8-1절)."""
+
+    id: str
+    template: str
+    values: dict[str, Any]
+    infra: PlanInfra
 
 
 class DeploymentCreate(BaseModel):

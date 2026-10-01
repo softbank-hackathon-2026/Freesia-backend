@@ -75,7 +75,7 @@ erDiagram
         varchar id PK "= DeploymentId 태그"
         varchar app_space_id FK
         varchar compute
-        varchar plan_id "plans 생기면 FK"
+        varchar plan_id "plans.id, API에서 검사"
         varchar commit_sha
         varchar status "pending ~ success / failed"
         varchar step "queued ~ done"
@@ -118,7 +118,7 @@ erDiagram
 | `repositories` | 통합 메뉴에서 등록한 GitHub 저장소. 코드는 저장 안 함 | 사용자 (`POST /api/repositories`) | **구현됨** |
 | `app_spaces` | 사용자가 만든 앱 = 저장소 하나 + 인프라 하나 | 사용자 (`POST /api/app-spaces`) | **구현됨** |
 | `analyses` | AI 견적. 어느 코드 버전(`commit_sha`), 어느 인프라 기준인지 함께 남김 | 백엔드 + AI (`app/ai`) | **구현됨** (모델 연결 전에는 샘플 결과) |
-| `plans` | AI가 고른 템플릿 + 채운 값. 워크플로가 `plan_id`로 받아 감 | 백엔드 + AI | 설계만 (API 명세 8절) |
+| `plans` | 템플릿 + 넣을 값. 워크플로가 `plan_id`로 받아 감 | 백엔드 (지금은 템플릿 기본값, 나중에 AI) | **구현됨** |
 | `deployments` | 배포 버튼 한 번에 한 줄. 상태, 앱 주소, 실패 이유 | 백엔드 + 배포 워크플로 콜백 | **구현됨** |
 | `deployment_events` | 배포 진행 단계. SSE가 다시 연결되면 `seq` 다음부터 보냄 | 배포 워크플로 콜백 (연결 전에는 가짜 진행) | **구현됨** |
 | `deployment_resources` | 트리용 자원별 상태. `address` 기준으로 덮어씀 | 배포 워크플로 콜백 | **구현됨** |
@@ -184,16 +184,19 @@ erDiagram
 | `created_at` | timestamptz | | O | |
 | `finished_at` | timestamptz | | | |
 
-### plans (구성안) · 설계만
+### plans (구성안) · 구현됨
 
 | 칸 | 타입 | 키 | 필수 | 설명 |
 |---|---|---|---|---|
-| `id` | varchar | PK | O | `plan_id`. 워크플로가 이 값으로 템플릿과 값을 받아 간다 (ADR-009) |
-| `analysis_id` | varchar | FK → analyses | O | 어느 견적에서 나왔는지 |
-| `compute` | varchar | | O | `ecs-fargate` / `lambda` / `ec2` |
-| `template` | varchar | | O | 배포 레포 `workload-deploy`의 `templates/` 아래 폴더 이름. 예: `ecs-fargate/basic` |
-| `values` | json | | O | AI가 채운 값. 템플릿 범위로 검사하고 빠진 값은 기본값으로 채운다 (API 명세 8절) |
-| `created_at` | timestamptz | | O | |
+| `id` | varchar(32) | PK | O | `plan_id`. 워크플로가 이 값으로 템플릿·값·인프라를 받아 간다 (ADR-009, 명세 8-1절) |
+| `app_space_id` | varchar(32) | FK → app_spaces | O | |
+| `analysis_id` | varchar(32) | FK → analyses | | 만들 때의 최신 완료 분석. 분석 없이 만들었으면 비어 있다 |
+| `compute` | varchar(20) | | O | 템플릿이 준비된(`catalog.py`의 `ready`) 컴퓨팅만 |
+| `template` | varchar(100) | | O | 배포 레포 `workload-deploy`의 `templates/` 아래 폴더 이름. 예: `ecs-fargate/basic` |
+| `values` | json | | O | 템플릿에 넣을 값. 범위를 검사하고 빠진 값은 기본값으로 채운 뒤 저장 (ADR-012) |
+| `name`, `summary` | varchar | | O | 화면에 보일 이름·설명 |
+| `pros`, `cons` | json | | O | 장단점 목록 |
+| `created_at` | timestamptz | | O | 같은 컴퓨팅이면 가장 최근 것을 보여 준다 |
 
 ### deployments (배포 기록) · 구현됨
 
@@ -202,7 +205,7 @@ erDiagram
 | `id` | varchar(32) | PK | O | AWS `DeploymentId` 태그와 같은 값 |
 | `app_space_id` | varchar(32) | FK → app_spaces | O | 한 앱에 진행 중인 배포는 하나만 |
 | `compute` | varchar(20) | | O | `ecs-fargate` / `lambda` / `ec2` |
-| `plan_id` | varchar(32) | | | 고른 구성안. `plans`가 생기면 FK를 건다 |
+| `plan_id` | varchar(32) | | | 고른 구성안 (`plans.id`). 배포 시작 때 이 앱·컴퓨팅의 구성안인지 API가 검사한다. 이미 있는 행 때문에 FK는 걸지 않았다 |
 | `commit_sha` | varchar(40) | | | 배포한 코드 버전. 워크플로 실행을 붙일 때 채운다 |
 | `status` | varchar(20) | | O | `pending` / `building` / `deploying` / `success` / `failed` |
 | `step` | varchar(20) | | O | `queued` / `prepare` / `build` / `deploy` / `verify` / `done` (API 명세 9-3절) |

@@ -37,9 +37,11 @@ app/
   ids.py           ID·시각 생성
   deploy.py        배포 진행 기록 (콜백과 가짜 진행이 함께 씀)
   analysis.py      AI 분석 실행·저장 (백그라운드, 멈춤 방지). AI 호출은 ai/
+  catalog.py       배포 템플릿 목록 (배포 레포 templates/와 이름·값 범위를 맞춘다, ready 스위치)
+  signing.py       워크플로가 부르는 API의 서명 확인 (X-Hub-Signature-256)
   ai/              AI 분석: 저장소 읽기(repo.py), 모델 호출·검증(analyze.py). 담당 강효승
-  models/          SQLAlchemy 모델 (repositories, infra_spaces, app_spaces, analyses, deployments)
-  routers/         API (health, infra_spaces, repositories, app_spaces, deployments)
+  models/          SQLAlchemy 모델 (repositories, infra_spaces, app_spaces, analyses, plans, deployments)
+  routers/         API (health, infra_spaces, repositories, app_spaces, deployments, plans)
 alembic/           마이그레이션
 tests/             pytest
 docs/handoff.md    지금까지의 논의·결정 정리
@@ -103,7 +105,7 @@ API 모양은 `app/schemas.py`에 있다. 아래 순서로 실제 기능으로 �
 2. ~~인프라 Space 조회~~ (DB, 마이그레이션 0002로 3개 입력). 남은 것: 나머지 2종 실제 값, 태그 조회로 자동 채우기(선택)
 3. ~~레포 URL로 주요 파일 읽기~~ (완료, `app/ai/repo.py`, tarball). 남은 것: 서버용 GitHub 읽기 토큰(없으면 시간당 분석 약 30번)
 4. ~~AI 분석 요청·결과 저장·조회~~ (완료). 남은 것: 실제 모델 연결, 분석한 `commit_sha`를 배포에 쓰기
-5. 배포: DB 저장·콜백 수신(서명)·SSE·자원별 상태는 완료. 남은 것: 워크플로 실행(`workflow_dispatch`, GitHub 토큰), 구성안 저장·값 조회 API(명세 8절), 30분 시간 초과 처리. 연결 전까지 `DEPLOY_SIMULATE=true`로 가짜 진행을 기록한다
+5. 배포: DB 저장·콜백 수신(서명)·SSE·자원별 상태는 완료. 구성안 저장·워크플로용 값 조회 API(명세 8절)도 완료. 남은 것: 워크플로 실행(`workflow_dispatch`, GitHub 토큰), AI가 구성안 값 채우기(지금은 템플릿 기본값), 30분 시간 초과 처리. 연결 전까지 `DEPLOY_SIMULATE=true`로 가짜 진행을 기록한다
 6. 모니터링 조회 API (인프라 Space: 올라간 앱 목록 / 앱 Space: 메트릭·로그)
 
 인터페이스 초안은 `docs/handoff.md`의 "인터페이스 초안" 참고.
