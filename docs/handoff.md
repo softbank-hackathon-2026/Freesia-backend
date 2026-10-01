@@ -92,6 +92,7 @@
 |---|---|---|---|
 | 헬스체크·버전 | GET | `/api/health`, `/api/health/db`, `/api/version.txt` | 구현됨 |
 | 인프라 Space 목록·상세 | GET | `/api/infra-spaces`, `/api/infra-spaces/{id}` | 가짜 데이터 |
+| 저장소 등록·목록·해제 (통합) | POST/GET/DELETE | `/api/repositories`, `/api/repositories/{id}` | 구현됨 (DB 저장) |
 | 앱 Space 생성·목록·상세 | POST/GET | `/api/app-spaces`, `/api/app-spaces/{id}` | 가짜 데이터 |
 | AI 분석 시작·결과 | POST/GET | `/api/app-spaces/{id}/analysis` | 가짜 데이터 |
 | 배포 시작 | POST | `/api/app-spaces/{id}/deployments` | 가짜 데이터 |

@@ -34,8 +34,9 @@ app/
   db.py            DB 연결 (DATABASE_URL 하나로 접속)
   schemas.py       API 요청·응답 형식 (프론트·AI와 맞추는 계약)
   mock_data.py     가짜 데이터. 실제 기능이 붙으면 하나씩 대체한다
-  models/          SQLAlchemy 모델 (아직 없음)
-  routers/         API (health, infra_spaces, app_spaces, deployments)
+  ids.py           ID·시각 생성 (가짜 데이터와 DB 코드가 함께 씀)
+  models/          SQLAlchemy 모델 (repositories)
+  routers/         API (health, infra_spaces, repositories, app_spaces, deployments)
 alembic/           마이그레이션
 tests/             pytest
 docs/handoff.md    지금까지의 논의·결정 정리

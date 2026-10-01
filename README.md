@@ -37,7 +37,7 @@ alembic upgrade head                        # 적용 (컨테이너 시작 시 �
 ## 프론트 연동 메모
 
 - 로그인이 없다. 모든 API를 인증 없이 호출한다.
-- 흐름: `GET /api/infra-spaces` → `POST /api/app-spaces` → `GET /api/app-spaces/{id}/analysis` → `POST /api/app-spaces/{id}/deployments` → `GET /api/deployments/{id}/events`
+- 흐름: `POST /api/repositories` (통합: 저장소 등록) → `GET /api/infra-spaces` → `POST /api/app-spaces` → `GET /api/app-spaces/{id}/analysis` → `POST /api/app-spaces/{id}/deployments` → `GET /api/deployments/{id}/events`
 - 배포 진행 상황은 SSE다. `new EventSource(url)`로 연결하고 `progress` 이벤트를 받는다. 마지막 이벤트의 `status`는 `success` 또는 `failed`. 이벤트가 없는 동안에는 15초마다 연결 유지용 주석(`: ping`)이 오고, 다시 연결하면 현재 단계부터 이어서 받는다.
 - 에러 응답 형식: `{"error": "코드", "message": "설명"}`
 

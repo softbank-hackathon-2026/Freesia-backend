@@ -28,6 +28,39 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: pytest
 
+  # 서버(RDS)와 같은 PostgreSQL 버전에서 마이그레이션을 올렸다 내렸다 다시 올려 본다.
+  # 테스트는 SQLite로 돌기 때문에 PostgreSQL에서만 나는 오류는 여기서 잡는다.
+  migrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: freesia
+          POSTGRES_PASSWORD: freesia
+          POSTGRES_DB: freesia
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U freesia"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # CI 전용 일회성 DB라 비밀값이 아니다
+      DATABASE_URL: postgresql+psycopg://freesia:freesia@localhost:5432/freesia
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements.txt
+      - run: alembic upgrade head
+      - run: alembic downgrade base
+      - run: alembic upgrade head
+
   docker-build:
     runs-on: ubuntu-latest
     timeout-minutes: 10

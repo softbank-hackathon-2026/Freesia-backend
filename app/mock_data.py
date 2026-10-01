@@ -4,9 +4,7 @@
 응답 형식은 app/schemas.py를 그대로 따르므로, 실제 기능으로 바꿔도 프론트는 고칠 것이 없다.
 저장은 메모리에만 하므로 서버를 재시작하면 사라진다.
 """
-import uuid
-from datetime import datetime, timezone
-
+from app.ids import new_id, now  # noqa: F401  라우터가 mock_data.new_id / mock_data.now로 쓴다
 from app.schemas import Analysis, AppSpace, Candidate, Deployment, Evidence, InfraSpace
 
 INFRA_SPACES: list[InfraSpace] = [
@@ -40,15 +38,6 @@ APP_SPACES: dict[str, AppSpace] = {}
 DEPLOYMENTS: dict[str, Deployment] = {}
 # 배포별로 SSE가 어디까지 보냈는지 (다시 연결하면 이어서 보내기 위함)
 PROGRESS: dict[str, int] = {}
-
-
-def now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def new_id(prefix: str) -> str:
-    # ADR-005: 소문자·숫자·하이픈만
-    return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
 
 def sample_analysis() -> Analysis:
