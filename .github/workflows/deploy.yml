@@ -1,10 +1,13 @@
 # 백엔드 CD (ADR-002, ADR-013)
 # 테스트 → 이미지 빌드·ECR 푸시(SHA 태그) → Task Definition 등록 → 마이그레이션 Task → Service 생성/갱신 → 동작 확인.
 # Task Definition과 Service는 Terraform이 아니라 이 워크플로가 만든다 (platform-terraform env/dev/README.md).
-# 첫 배포가 성공할 때까지는 수동 실행만 한다. 성공하면 push: main 트리거를 추가한다.
+# main에 머지되면 자동으로 배포한다(첫 배포 성공 후 전환, ADR-002). 문서만 바뀌면 배포하지 않는다. 수동 실행도 된다.
 name: Deploy
 
 on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
   workflow_dispatch:
 
 permissions:
@@ -24,6 +27,8 @@ env:
   ECS_SERVICE: sbh-platform-dev-ecs-api
   CONTAINER_NAME: app
   CONTAINER_PORT: "8000"
+  # 앱·배포가 DB에 저장되므로 AZ마다 1개씩 2개로 띄운다 (ADR-013, ADR-023).
+  DESIRED_COUNT: "2"
   SUBNET_IDS: subnet-0e3f66a93b2c40823,subnet-06635303ea3e34dd3
   SECURITY_GROUP_ID: sg-009da678f0be6455f
   TARGET_GROUP_ARN: arn:aws:elasticloadbalancing:ap-northeast-2:723225040786:targetgroup/sbh-platform-dev-tg-api/0c485142dcd504e2
@@ -132,7 +137,7 @@ jobs:
             exit 1
           fi
 
-      # Service가 없으면 만들고(첫 배포), 있으면 새 revision으로 바꾼다. Task 수는 만들 때만 정하고 이후에는 건드리지 않는다.
+      # Service가 없으면 만들고(첫 배포), 있으면 새 revision으로 바꾼다. Task 수는 매번 DESIRED_COUNT로 맞춘다.
       - name: Service 생성 또는 갱신
         env:
           TASK_DEF: ${{ steps.taskdef.outputs.arn }}
@@ -141,11 +146,11 @@ jobs:
           STATUS=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
             --query 'services[0].status' --output text)
           if [ "$STATUS" = "ACTIVE" ]; then
-            aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --task-definition "$TASK_DEF" > /dev/null
+            aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_SERVICE" --task-definition "$TASK_DEF" \
+              --desired-count "$DESIRED_COUNT" > /dev/null
           else
-            # 백엔드가 데이터를 메모리에 저장하는 동안은 Task 1개. DB 저장이 붙으면 2개(AZ마다 1개)로 올린다 (ADR-013).
             aws ecs create-service --cluster "$ECS_CLUSTER" --service-name "$ECS_SERVICE" --task-definition "$TASK_DEF" \
-              --desired-count 1 --launch-type FARGATE --platform-version LATEST --network-configuration "$NETWORK" \
+              --desired-count "$DESIRED_COUNT" --launch-type FARGATE --platform-version LATEST --network-configuration "$NETWORK" \
               --load-balancers "targetGroupArn=$TARGET_GROUP_ARN,containerName=$CONTAINER_NAME,containerPort=$CONTAINER_PORT" \
               --health-check-grace-period-seconds 60 \
               --deployment-configuration "minimumHealthyPercent=100,maximumPercent=200,deploymentCircuitBreaker={enable=true,rollback=true}" \
