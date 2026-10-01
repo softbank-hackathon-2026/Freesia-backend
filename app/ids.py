@@ -1,4 +1,4 @@
-"""ID와 시각 생성. 가짜 데이터와 DB 저장 코드가 함께 쓴다."""
+"""ID와 시각 생성."""
 import uuid
 from datetime import datetime, timezone
 

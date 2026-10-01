@@ -33,10 +33,11 @@ app/
   config.py        환경변수 설정 (Settings)
   db.py            DB 연결 (DATABASE_URL 하나로 접속)
   schemas.py       API 요청·응답 형식 (프론트·AI와 맞추는 계약)
-  mock_data.py     가짜 데이터. 실제 기능이 붙으면 하나씩 대체한다
-  ids.py           ID·시각 생성 (가짜 데이터와 DB 코드가 함께 씀)
+  mock_data.py     가짜 데이터. 지금은 AI 분석 결과만 남았다
+  ids.py           ID·시각 생성
+  deploy.py        배포 진행 기록 (콜백과 가짜 진행이 함께 씀)
   ai/              AI 분석: 저장소 읽기(repo.py), 모델 호출·검증(analyze.py). 담당 강효승
-  models/          SQLAlchemy 모델 (repositories)
+  models/          SQLAlchemy 모델 (repositories, infra_spaces, app_spaces, deployments)
   routers/         API (health, infra_spaces, repositories, app_spaces, deployments)
 alembic/           마이그레이션
 tests/             pytest
@@ -95,13 +96,13 @@ alembic upgrade head
 
 ## 9. 다음 작업 (백로그)
 
-API 모양은 `app/schemas.py`에 있고, 지금은 `app/mock_data.py`의 가짜 데이터로 응답한다. 아래 순서로 실제 기능으로 바꾼다. 응답 모양은 유지한다.
+API 모양은 `app/schemas.py`에 있다. 아래 순서로 실제 기능으로 바꾼다. 응답 모양은 유지한다. 테이블 설계는 `docs/erd.md`.
 
-1. 앱 Space DB 저장 (생성·조회·목록, 레포 URL, 선택 인프라)
-2. 인프라 Space 조회 (Platform DB의 인프라 목록, `InfraId` 기준)
+1. ~~앱 Space DB 저장~~ (완료). 남은 것: 프론트 통합 화면이 저장소 API에 연결되면 등록된 저장소만 받기(`400 repository_not_registered`, 명세 6절)
+2. ~~인프라 Space 조회~~ (DB, 마이그레이션 0002로 3개 입력). 남은 것: 나머지 2종 실제 값, 태그 조회로 자동 채우기(선택)
 3. 레포 URL로 주요 파일 읽기 (public 레포, 서버 토큰)
 4. AI 분석 요청·결과(추천안, 판단 근거, 트리) 저장·조회
-5. 배포 요청 전달 + 콜백 수신 + SSE 진행 상황 전달
+5. 배포: DB 저장·콜백 수신(서명)·SSE·자원별 상태는 완료. 남은 것: 워크플로 실행(`workflow_dispatch`, GitHub 토큰), 구성안 저장·값 조회 API(명세 8절), 30분 시간 초과 처리. 연결 전까지 `DEPLOY_SIMULATE=true`로 가짜 진행을 기록한다
 6. 모니터링 조회 API (인프라 Space: 올라간 앱 목록 / 앱 Space: 메트릭·로그)
 
 인터페이스 초안은 `docs/handoff.md`의 "인터페이스 초안" 참고.

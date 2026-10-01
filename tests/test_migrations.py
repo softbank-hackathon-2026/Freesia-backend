@@ -5,7 +5,7 @@ from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 
 from app.config import get_settings
 from app.db import Base
@@ -24,6 +24,25 @@ def test_migrations_match_models(tmp_path, monkeypatch):
         get_settings.cache_clear()
     with create_engine(url).connect() as conn:
         assert compare_metadata(MigrationContext.configure(conn), Base.metadata) == []
+
+
+def test_infra_is_seeded(tmp_path, monkeypatch):
+    # 서버 DB에는 마이그레이션으로 인프라 목록이 들어간다 (화면 순서: 퍼블릭 → 내부 → 고가용성)
+    url = f"sqlite:///{tmp_path}/seed.db"
+    monkeypatch.setenv("DATABASE_URL", url)
+    get_settings.cache_clear()
+    try:
+        command.upgrade(Config(str(ROOT / "alembic.ini")), "head")
+    finally:
+        get_settings.cache_clear()
+    with create_engine(url).connect() as conn:
+        rows = conn.execute(text("SELECT id, vpc_id FROM infra_spaces ORDER BY created_at")).all()
+    assert [r[0] for r in rows] == [
+        "sbh-workload-demo-vpc-public01",
+        "sbh-workload-demo-vpc-private01",
+        "sbh-workload-demo-vpc-ha01",
+    ]
+    assert rows[0][1] == "vpc-0c7ca2fe59980fcea"
 
 
 def test_upgrade_accepts_percent_encoded_url(tmp_path, monkeypatch):

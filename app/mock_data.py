@@ -1,43 +1,9 @@
 """가짜 데이터 (프론트 연동용).
 
-실제 기능(DB 저장, AI 분석, 배포 파이프라인)이 붙기 전까지 API가 이 값을 돌려준다.
+실제 기능이 붙기 전까지 API가 이 값을 돌려준다. 지금 남은 것은 AI 분석 결과뿐이다.
 응답 형식은 app/schemas.py를 그대로 따르므로, 실제 기능으로 바꿔도 프론트는 고칠 것이 없다.
-저장은 메모리에만 하므로 서버를 재시작하면 사라진다.
 """
-from app.ids import new_id, now  # noqa: F401  라우터가 mock_data.new_id / mock_data.now로 쓴다
-from app.schemas import Analysis, AppSpace, Candidate, Deployment, Evidence, InfraSpace
-
-INFRA_SPACES: list[InfraSpace] = [
-    InfraSpace(
-        id="sbh-workload-demo-vpc-public01",
-        name="공개 웹 서비스용",
-        description="인터넷에서 바로 접속하는 웹 서비스. 퍼블릭 서브넷 + ALB",
-        network="public",
-        computes=["ecs-fargate", "lambda", "ec2"],
-        app_count=2,
-    ),
-    InfraSpace(
-        id="sbh-workload-demo-vpc-private01",
-        name="내부 API용",
-        description="외부 노출 없이 내부에서만 쓰는 API. 프라이빗 서브넷",
-        network="private",
-        computes=["ecs-fargate", "lambda"],
-        app_count=0,
-    ),
-    InfraSpace(
-        id="sbh-workload-demo-vpc-ha01",
-        name="고가용성 서비스용",
-        description="멀티 AZ로 장애에 강한 구성",
-        network="ha",
-        computes=["ecs-fargate", "ec2"],
-        app_count=1,
-    ),
-]
-
-APP_SPACES: dict[str, AppSpace] = {}
-DEPLOYMENTS: dict[str, Deployment] = {}
-# 배포별로 SSE가 어디까지 보냈는지 (다시 연결하면 이어서 보내기 위함)
-PROGRESS: dict[str, int] = {}
+from app.schemas import Analysis, Candidate, Evidence
 
 
 def sample_analysis() -> Analysis:
@@ -71,16 +37,3 @@ def sample_analysis() -> Analysis:
         ],
         mascot_message="Dockerfile이 있어서 컨테이너로 바로 올릴 수 있어요! Fargate를 추천해요.",
     )
-
-
-# 배포 진행 시나리오 (status, step, message, progress)
-DEPLOY_STEPS = [
-    ("pending", "queued", "배포 요청을 받았어요", 0),
-    ("building", "checkout", "저장소 코드를 가져오는 중", 10),
-    ("building", "image-build", "컨테이너 이미지를 빌드하는 중", 30),
-    ("building", "image-push", "이미지를 레지스트리에 올리는 중", 50),
-    ("deploying", "terraform-plan", "Terraform plan 실행 중", 60),
-    ("deploying", "terraform-apply", "Terraform apply 실행 중", 75),
-    ("deploying", "health-check", "앱이 정상 응답하는지 확인하는 중", 90),
-    ("success", "done", "배포 완료!", 100),
-]
