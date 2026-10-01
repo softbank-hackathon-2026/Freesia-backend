@@ -1,9 +1,9 @@
-"""앱 Space. 로그인 없이 모두가 보는 공용 목록이다. AI 분석은 아직 가짜 결과를 준다."""
+"""앱 Space. 로그인 없이 모두가 보는 공용 목록이다."""
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import deploy, mock_data, models
+from app import analysis, deploy, models
 from app.config import get_settings
 from app.db import get_db
 from app.ids import new_id, now
@@ -58,16 +58,33 @@ def get_app_space(app_space_id: str, db: Session = Depends(get_db)) -> models.Ap
 
 
 @router.post("/{app_space_id}/analysis", response_model=Analysis, summary="AI 분석 시작")
-def start_analysis(app_space_id: str, db: Session = Depends(get_db)) -> Analysis:
-    """지금은 바로 완료된 가짜 결과를 준다. 실제로는 status=running으로 시작한다."""
-    find_app_space(db, app_space_id)
-    return mock_data.sample_analysis()
+def start_analysis(app_space_id: str, background: BackgroundTasks, db: Session = Depends(get_db)) -> Analysis:
+    """분석을 시작하고 바로 `running`을 돌려준다. 결과는 GET으로 다시 확인한다 (예: 2초 간격).
+
+    진행 중인 분석이 있으면 새로 시작하지 않고 그 분석을 돌려준다. 끝난 뒤에 부르면 새로 분석한다.
+    AI 모델이 설정되지 않은 서버(AI_MODEL_ID 비어 있음)는 샘플 결과를 바로 `done`으로 돌려준다.
+    """
+    space = find_app_space(db, app_space_id)
+    current = analysis.latest(db, space.id)
+    if current is not None:
+        analysis.expire_if_stuck(db, current)
+        if current.status == "running":
+            return analysis.to_schema(current)
+    row, needs_run = analysis.start(db, space, db.get(models.InfraSpace, space.infra_id))
+    if needs_run:
+        background.add_task(analysis.run, row.id)
+    return analysis.to_schema(row)
 
 
 @router.get("/{app_space_id}/analysis", response_model=Analysis, summary="AI 분석 결과 (트리 데이터)")
 def get_analysis(app_space_id: str, db: Session = Depends(get_db)) -> Analysis:
+    """가장 최근 분석. `running`이면 아직 진행 중이고, 3분이 넘도록 끝나지 않으면 `failed`로 바뀐다."""
     find_app_space(db, app_space_id)
-    return mock_data.sample_analysis()
+    current = analysis.latest(db, app_space_id)
+    if current is None:
+        raise HTTPException(404, detail={"error": "analysis_not_found", "message": "아직 분석하지 않은 앱입니다."})
+    analysis.expire_if_stuck(db, current)
+    return analysis.to_schema(current)
 
 
 @router.post(

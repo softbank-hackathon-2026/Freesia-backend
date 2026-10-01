@@ -36,8 +36,9 @@ app/
   mock_data.py     가짜 데이터. 지금은 AI 분석 결과만 남았다
   ids.py           ID·시각 생성
   deploy.py        배포 진행 기록 (콜백과 가짜 진행이 함께 씀)
+  analysis.py      AI 분석 실행·저장 (백그라운드, 멈춤 방지). AI 호출은 ai/
   ai/              AI 분석: 저장소 읽기(repo.py), 모델 호출·검증(analyze.py). 담당 강효승
-  models/          SQLAlchemy 모델 (repositories, infra_spaces, app_spaces, deployments)
+  models/          SQLAlchemy 모델 (repositories, infra_spaces, app_spaces, analyses, deployments)
   routers/         API (health, infra_spaces, repositories, app_spaces, deployments)
 alembic/           마이그레이션
 tests/             pytest
@@ -91,7 +92,7 @@ alembic upgrade head
 - **서버용 GitHub 토큰**: 누구 계정으로 발급할지, Parameter Store 키 이름 (플랫폼 인프라 담당과 협의)
 - **비용 보호**: 동시 배포 1개 제한, 허용 레포 목록, 하루 횟수 상한 중 무엇을 적용할지
 - **고객 앱 배포 파이프라인**: 담당자·방식 미정 (Work Board "CI/CD 파이프라인 - 대상 서비스"). 후보: 백엔드 → GitHub Actions API(`workflow_dispatch`) + 콜백 (백엔드 추천안) / Jenkins / 백엔드 AWS SDK 직접
-- **AI 연동 방식**: AI 파트(강효승)와 요청·응답 JSON 형식 합의 필요
+- **AI 모델**: 모델 ID·리전 (강효승). 정해지면 Task Definition에 `AI_*` 환경변수, ECS 작업 역할에 Bedrock 권한 (정호원). 그전까지 `AI_MODEL_ID`가 비어 있으면 분석은 샘플 결과를 준다
 - **컴퓨팅 후보 목록**: ADR-003 결론 후 `compute` 값 확정
 
 ## 9. 다음 작업 (백로그)
@@ -100,8 +101,8 @@ API 모양은 `app/schemas.py`에 있다. 아래 순서로 실제 기능으로 �
 
 1. ~~앱 Space DB 저장~~ (완료). 남은 것: 프론트 통합 화면이 저장소 API에 연결되면 등록된 저장소만 받기(`400 repository_not_registered`, 명세 6절)
 2. ~~인프라 Space 조회~~ (DB, 마이그레이션 0002로 3개 입력). 남은 것: 나머지 2종 실제 값, 태그 조회로 자동 채우기(선택)
-3. 레포 URL로 주요 파일 읽기 (public 레포, 서버 토큰)
-4. AI 분석 요청·결과(추천안, 판단 근거, 트리) 저장·조회
+3. ~~레포 URL로 주요 파일 읽기~~ (완료, `app/ai/repo.py`, tarball). 남은 것: 서버용 GitHub 읽기 토큰(없으면 시간당 분석 약 30번)
+4. ~~AI 분석 요청·결과 저장·조회~~ (완료). 남은 것: 실제 모델 연결, 분석한 `commit_sha`를 배포에 쓰기
 5. 배포: DB 저장·콜백 수신(서명)·SSE·자원별 상태는 완료. 남은 것: 워크플로 실행(`workflow_dispatch`, GitHub 토큰), 구성안 저장·값 조회 API(명세 8절), 30분 시간 초과 처리. 연결 전까지 `DEPLOY_SIMULATE=true`로 가짜 진행을 기록한다
 6. 모니터링 조회 API (인프라 Space: 올라간 앱 목록 / 앱 Space: 메트릭·로그)
 
