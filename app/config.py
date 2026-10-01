@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     # true면 워크플로를 부르지 않고 가짜 진행을 DB에 기록한다 (배포 레포 연결 전까지, API 명세 9-1)
     deploy_simulate: bool = True
 
+    # AI 분석 (Bedrock, ADR-006·007). 모델·리전은 값만 바꿔 고른다. 자격증명은 두지 않는다 (규칙 9: 서버는 ECS 작업 역할)
+    ai_model_id: str = ""
+    ai_aws_region: str = "ap-northeast-2"  # 모델마다 열려 있는 리전이 다르다
+    ai_timeout_seconds: int = 60  # 모델 응답 대기 상한 (API 명세 7절 3번)
+    ai_schema_output: bool = True  # 모델이 JSON 스키마 출력(outputConfig)을 지원하지 않으면 false (예: Nova 2 Lite)
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

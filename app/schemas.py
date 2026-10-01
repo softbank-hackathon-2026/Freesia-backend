@@ -3,7 +3,7 @@ import re
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 # https://github.com/{owner}/{repo} (끝의 / 와 .git은 허용하고 저장할 때 뗀다)
 GITHUB_REPO_URL = re.compile(r"^https://github\.com/([A-Za-z0-9-]+)/([A-Za-z0-9._-]+?)(?:\.git)?/?$")
@@ -111,6 +111,7 @@ class Candidate(BaseModel):
     state: CandidateState
     reason: str
     cons: list[str] = []
+    evidence_files: list[str] = Field([], description="이 후보를 판단한 근거 파일. evidence[].file 중에서 고른다 (ADR-020)")
 
 
 class Analysis(BaseModel):

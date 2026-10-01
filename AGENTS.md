@@ -36,6 +36,7 @@ app/
   mock_data.py     가짜 데이터. 지금은 AI 분석 결과만 남았다
   ids.py           ID·시각 생성
   deploy.py        배포 진행 기록 (콜백과 가짜 진행이 함께 씀)
+  ai/              AI 분석: 저장소 읽기(repo.py), 모델 호출·검증(analyze.py). 담당 강효승
   models/          SQLAlchemy 모델 (repositories, infra_spaces, app_spaces, deployments)
   routers/         API (health, infra_spaces, repositories, app_spaces, deployments)
 alembic/           마이그레이션
