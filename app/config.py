@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     # 프론트 주소 (쉼표로 여러 개)
     cors_origins: str = "http://localhost:5173"
 
+    # 배포 워크플로 콜백 서명 키 (ADR-009). 서버는 Parameter Store
+    # /sbh/platform/demo/backend/DEPLOY_CALLBACK_SECRET 값이 주입된다. 비어 있으면 콜백을 모두 거절한다.
+    deploy_callback_secret: str = ""
+    # true면 워크플로를 부르지 않고 가짜 진행을 DB에 기록한다 (배포 레포 연결 전까지, API 명세 9-1)
+    deploy_simulate: bool = True
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
