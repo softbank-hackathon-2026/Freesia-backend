@@ -18,10 +18,34 @@ FARGATE_MEMORY = {
 }
 
 
+# Lambda는 root가 아니라 1024 미만 포트를 열 수 없다 (배포 레포 templates/lambda/basic/README.md)
+LAMBDA_MIN_PORT = 1024
+EC2_INSTANCE_TYPES = ["t3.micro", "t3.small", "t3.medium"]
+
+
+def _port(raw: dict[str, Any], default: int, low: int = 1) -> int:
+    port = raw.get("container_port", default)
+    if not (isinstance(port, int) and not isinstance(port, bool) and low <= port <= 65535):
+        raise ValueError(f"container_port는 {low}~65535 정수여야 합니다.")
+    return port
+
+
+def _int_in(raw: dict[str, Any], name: str, default: int, low: int, high: int) -> int:
+    v = raw.get(name, default)
+    if not (isinstance(v, int) and not isinstance(v, bool) and low <= v <= high):
+        raise ValueError(f"{name}는 {low}~{high} 정수여야 합니다.")
+    return v
+
+
+def _path(raw: dict[str, Any]) -> str:
+    path = raw.get("health_check_path", "/")
+    if not (isinstance(path, str) and PATH_RE.match(path)):
+        raise ValueError("health_check_path는 /로 시작하는 URL 경로여야 합니다.")
+    return path
+
+
 def _fargate_values(raw: dict[str, Any]) -> dict[str, Any]:
-    port = raw.get("container_port", 80)
-    if not (isinstance(port, int) and not isinstance(port, bool) and 1 <= port <= 65535):
-        raise ValueError("container_port는 1~65535 정수여야 합니다.")
+    port = _port(raw, 80)
     cpu = raw.get("cpu", 256)
     if cpu not in FARGATE_MEMORY:
         raise ValueError("cpu는 256, 512, 1024 중 하나여야 합니다.")
@@ -29,10 +53,23 @@ def _fargate_values(raw: dict[str, Any]) -> dict[str, Any]:
     memory = raw.get("memory", FARGATE_MEMORY[cpu][0])
     if memory not in FARGATE_MEMORY[cpu]:
         raise ValueError(f"cpu {cpu}에서 memory는 {FARGATE_MEMORY[cpu]} 중 하나여야 합니다.")
-    path = raw.get("health_check_path", "/")
-    if not (isinstance(path, str) and PATH_RE.match(path)):
-        raise ValueError("health_check_path는 /로 시작하는 URL 경로여야 합니다.")
-    return {"container_port": port, "cpu": cpu, "memory": memory, "health_check_path": path}
+    return {"container_port": port, "cpu": cpu, "memory": memory, "health_check_path": _path(raw)}
+
+
+def _lambda_values(raw: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "container_port": _port(raw, 8080, LAMBDA_MIN_PORT),
+        "memory": _int_in(raw, "memory", 512, 128, 10240),
+        "timeout": _int_in(raw, "timeout", 30, 1, 900),
+        "health_check_path": _path(raw),
+    }
+
+
+def _ec2_values(raw: dict[str, Any]) -> dict[str, Any]:
+    instance_type = raw.get("instance_type", "t3.micro")
+    if instance_type not in EC2_INSTANCE_TYPES:
+        raise ValueError(f"instance_type은 {', '.join(EC2_INSTANCE_TYPES)} 중 하나여야 합니다.")
+    return {"container_port": _port(raw, 80), "instance_type": instance_type, "health_check_path": _path(raw)}
 
 
 @dataclass(frozen=True)
@@ -59,9 +96,27 @@ TEMPLATES: dict[str, Template] = {
         pros=["서버 관리 없이 컨테이너를 바로 실행", "비용이 가장 적은 크기로 시작"],
         cons=["트래픽이 늘면 크기나 Task 수를 직접 늘려야 함"],
     ),
-    # 배포 레포에 템플릿이 생기면 name과 fill을 채우고 ready를 켠다 (4일차 회의: 정호원 님 작성 예정)
-    "lambda": Template(compute="lambda", name=None, ready=False),
-    "ec2": Template(compute="ec2", name=None, ready=False),
+    # 10/2 박소정 님 추가. 둘 다 Space의 퍼블릭 서브넷(EC2) 또는 VPC 밖(Lambda)에 앱 전용 입구를 만든다
+    "lambda": Template(
+        compute="lambda",
+        name="lambda/basic",
+        ready=True,
+        fill=_lambda_values,
+        plan_name="기본형",
+        summary="컨테이너 이미지를 Lambda로 실행하고 함수 주소(function URL)로 바로 공개하는 구성",
+        pros=["요청이 없으면 비용이 거의 없음", "서버·로드밸런서 관리 없음"],
+        cons=["오래 쉬다 첫 요청이 오면 느림(콜드 스타트)", "앱이 1024 이상 포트를 써야 함"],
+    ),
+    "ec2": Template(
+        compute="ec2",
+        name="ec2/basic",
+        ready=True,
+        fill=_ec2_values,
+        plan_name="기본형",
+        summary="퍼블릭 서브넷의 EC2 서버 1대에서 Docker로 앱을 실행하는 구성",
+        pros=["서버를 직접 들여다볼 수 있음", "작은 서버로 시작해 비용이 예측 가능"],
+        cons=["서버 1대라 장애나 재배포 때 잠깐 멈춤", "재배포하면 주소가 바뀜"],
+    ),
 }
 
 
