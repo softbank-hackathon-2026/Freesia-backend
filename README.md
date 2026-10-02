@@ -47,7 +47,7 @@ API 계약은 [백엔드 API 명세 (Notion)](https://app.notion.com/p/3ec8bee9a
 | 내리기 | `POST /api/app-spaces/{id}/teardown` | 🟠 | `destroy.yml` 실행. 실제 워크플로로 배포된 적 있어야 함 (`not_deployed`). 결과는 앱의 `teardown_status` |
 | 워크플로 전용 | `POST /api/deployments/{id}/callback` | 🟠 | 서버 준비 완료(서명 키 연결). 워크플로 실행 후 동작 |
 | | `GET /api/plans/{plan_id}` | 🟠 | 같음 |
-| 모니터링 | `GET /api/app-spaces/{id}/metrics`, `/logs` | 🟠 | 떠 있는 실제 배포의 CPU·메모리·응답 시간, 최근 로그. Workload 키로 CloudWatch 읽기만 |
+| 모니터링 | `GET /api/app-spaces/{id}/metrics`, `/logs` | 🟠 | 떠 있는 실제 배포의 지표와 최근 로그. Fargate: CPU·메모리·응답 시간·요청·5xx / Lambda: 처리 시간·호출·오류 / EC2: CPU만(로그 없음). 응답 칸은 같고 없는 값은 null. Workload 키로 CloudWatch 읽기만 |
 | | `POST /api/app-spaces/{id}/teardown/callback` | 🟠 | 내리기 결과 (`success` / `failed` + `reason`). 같은 서명 |
 
 에러는 모두 `{"error": "코드", "message": "설명"}`입니다. 요청·응답 모양은 Swagger와 Notion 명세를 봐 주세요.
