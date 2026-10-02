@@ -130,6 +130,8 @@ def test_bedrock_error_is_failed(repo_files, monkeypatch):
 # 템플릿 값 (ADR-012). 틀린 칸만 버리고 분석은 그대로 쓴다. 기본값은 구성안을 만들 때 채운다
 
 GOOD = {"container_port": 3000, "health_check_path": "/health", "cpu": 256, "memory": 512}
+LAMBDA_GOOD = {"container_port": 3000, "health_check_path": "/health", "memory": 512, "timeout": 30}
+EC2_GOOD = {"container_port": 3000, "health_check_path": "/health", "instance_type": "t3.micro"}
 
 
 def without(values, *names):
@@ -137,34 +139,37 @@ def without(values, *names):
 
 
 def test_template_values_saved(repo_files, model):
-    model(output(template_values={"ecs-fargate": GOOD}))
+    values = {"ecs-fargate": GOOD, "lambda": LAMBDA_GOOD, "ec2": EC2_GOOD}
+    model(output(template_values=values))
     result, _ = run_analysis(URL, "main", COMPUTES)
-    assert result.template_values == {"ecs-fargate": GOOD}
+    assert result.template_values == values
 
 
 @pytest.mark.parametrize(
-    "given,expected",
+    "compute,given,expected",
     [
-        ({**GOOD, "memory": 4096}, without(GOOD, "memory")),  # cpu 256에 없는 memory만 버리고 포트는 지킨다
-        ({**GOOD, "cpu": 1024, "memory": 512}, {**without(GOOD, "memory"), "cpu": 1024}),  # cpu 1024에 없는 memory
-        ({**GOOD, "cpu": 2048}, without(GOOD, "cpu")),  # 템플릿 밖 cpu
-        ({**GOOD, "container_port": "3000"}, without(GOOD, "container_port")),
-        ({**GOOD, "health_check_path": "health"}, without(GOOD, "health_check_path")),
-        ({"port": 3000}, {}),  # 모르는 이름은 무시된다
-        ("모양이 틀림", {}),
+        ("ecs-fargate", {**GOOD, "memory": 4096}, without(GOOD, "memory")),  # cpu 256에 없는 memory만 버리고 포트는 지킨다
+        ("ecs-fargate", {**GOOD, "cpu": 1024, "memory": 512}, {**without(GOOD, "memory"), "cpu": 1024}),  # cpu 1024에 없는 memory
+        ("ecs-fargate", {**GOOD, "cpu": 2048}, without(GOOD, "cpu")),  # 템플릿 밖 cpu
+        ("ecs-fargate", {**GOOD, "container_port": "3000"}, without(GOOD, "container_port")),
+        ("ecs-fargate", {**GOOD, "health_check_path": "health"}, without(GOOD, "health_check_path")),
+        ("ecs-fargate", {"port": 3000}, {}),  # 모르는 이름은 무시된다
+        ("ecs-fargate", "모양이 틀림", {}),
+        ("lambda", {**LAMBDA_GOOD, "container_port": 80}, without(LAMBDA_GOOD, "container_port")),  # Lambda는 1024 미만 포트를 못 연다
+        ("ec2", {**EC2_GOOD, "instance_type": "t2.micro"}, without(EC2_GOOD, "instance_type")),  # 템플릿 밖 서버 크기
     ],
 )
-def test_wrong_template_values_fall_back_per_field(repo_files, model, given, expected):
-    model(output(template_values={"ecs-fargate": given}))
+def test_wrong_template_values_fall_back_per_field(repo_files, model, compute, given, expected):
+    model(output(template_values={compute: given}))
     result, _ = run_analysis(URL, "main", COMPUTES)
-    assert result.status == "done" and result.template_values["ecs-fargate"] == expected
+    assert result.status == "done" and result.template_values[compute] == expected
 
 
 @pytest.mark.parametrize("over", [{}, {"template_values": ["모양이 틀림"]}])
 def test_missing_template_values_are_empty(repo_files, model, over):
     model(output(**over))
     result, _ = run_analysis(URL, "main", COMPUTES)
-    assert result.status == "done" and result.template_values == {"ecs-fargate": {}}
+    assert result.status == "done" and result.template_values == {compute: {} for compute in TEMPLATE_FIELDS}
 
 
 def test_failed_has_no_template_values(repo_files, model):
