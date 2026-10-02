@@ -9,6 +9,8 @@ from tests.test_app_spaces import PUBLIC, create_space
 
 SECRET = "test-callback-secret"
 DEFAULTS = {"container_port": 80, "cpu": 256, "memory": 512, "health_check_path": "/"}
+# AI가 포트를 확인하지 못한 구성안. 포트는 배포 워크플로가 Dockerfile EXPOSE로 정한다
+PLAN_DEFAULTS = {"cpu": 256, "memory": 512, "health_check_path": "/"}
 
 
 @pytest.fixture
@@ -84,7 +86,7 @@ def test_create_and_get_plan(client):
     assert (body["status"], body["compute"], len(body["plans"])) == ("done", "ecs-fargate", 1)
     plan = body["plans"][0]
     assert plan["id"].startswith("plan-")
-    assert (plan["template"], plan["values"], plan["name"]) == ("ecs-fargate/basic", DEFAULTS, "기본형")
+    assert (plan["template"], plan["values"], plan["name"]) == ("ecs-fargate/basic", PLAN_DEFAULTS, "기본형")
     assert plan["pros"] and plan["cons"]
     got = client.get(f"/api/app-spaces/{space['id']}/plans", params={"compute": "ecs-fargate"}).json()
     assert got["plans"][0]["id"] == plan["id"]
@@ -160,7 +162,7 @@ def test_workflow_gets_template_values_and_infra(client, secret):
     assert r.json() == {
         "id": plan_id,
         "template": "ecs-fargate/basic",
-        "values": DEFAULTS,
+        "values": PLAN_DEFAULTS,
         "infra": {"id": PUBLIC, "vpc_id": "vpc-test", "public_subnet_ids": [], "private_subnet_ids": []},
     }
 
@@ -193,8 +195,10 @@ AI_VALUES = {"container_port": 3000, "cpu": 256, "memory": 512, "health_check_pa
     "template_values,expected",
     [
         ({"ecs-fargate": AI_VALUES}, AI_VALUES),
-        ({"ecs-fargate": {**AI_VALUES, "memory": 4096}}, DEFAULTS),  # 검사 실패면 기본값 (분석 때 이미 걸러져 보통은 오지 않음)
-        ({}, DEFAULTS),  # 템플릿 값이 없는 옛 분석
+        ({"ecs-fargate": {**AI_VALUES, "memory": 4096}}, PLAN_DEFAULTS),  # 검사 실패면 기본값 (분석 때 이미 걸러져 보통은 오지 않음)
+        ({}, PLAN_DEFAULTS),  # 템플릿 값이 없는 옛 분석
+        ({"ecs-fargate": {"cpu": 512}}, {"cpu": 512, "memory": 1024, "health_check_path": "/"}),  # 포트만 모름
+        ({"ecs-fargate": {"container_port": 80}}, DEFAULTS),  # AI가 확인한 80은 그대로 넘긴다
     ],
 )
 def test_plan_uses_ai_template_values(client, monkeypatch, template_values, expected):
