@@ -13,7 +13,7 @@ from sqlalchemy import create_engine  # noqa: E402
 from sqlalchemy.orm import sessionmaker  # noqa: E402
 from sqlalchemy.pool import StaticPool  # noqa: E402
 
-from app import deploy, github, models  # noqa: E402
+from app import deploy, github, infra_sync, models  # noqa: E402
 from app.db import Base, SessionLocal, get_db  # noqa: E402
 from app.main import app  # noqa: E402
 from app.routers import deployments  # noqa: E402
@@ -54,6 +54,9 @@ def _db(monkeypatch):
         db.commit()
     # 가짜 진행과 SSE가 기다리지 않게 한다. 끝나지 않은 배포의 SSE도 0.5초 뒤에 닫힌다.
     monkeypatch.setattr(deploy, "STEP_INTERVAL_SECONDS", 0)
+    # 인프라 갱신은 서버(프로세스)마다 기억하는 값이라 테스트마다 비운다
+    monkeypatch.setattr(infra_sync, "_next_run", 0.0)
+    monkeypatch.setattr(infra_sync, "_last_error", None)
     monkeypatch.setattr(deployments, "POLL_SECONDS", 0.01)
     monkeypatch.setattr(deployments, "STREAM_MAX_SECONDS", 0.5)
     yield
