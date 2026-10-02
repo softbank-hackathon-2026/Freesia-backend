@@ -3,30 +3,32 @@
 컴퓨팅마다 배포 레포 workload-deploy의 templates/<이름>/variables.tf에서 "Filled per app"으로 표시된 변수와
 이름을 똑같이 쓴다. 여기에는 AI에게 물을 것(타입, 고를 수 있는 값, 설명)만 두고, 범위 검사와 기본값은
 app/catalog.py가 한다. 템플릿이 catalog에 등록(ready)된 뒤 여기에 추가한다.
-필드 순서는 fit_values가 값을 넣어 보는 순서라, 다른 값에 따라 범위가 바뀌는 값(memory)을 뒤에 둔다.
+필드 순서는 fit_values가 값을 넣어 보는 순서라, 다른 값에 따라 범위가 바뀌는 값(Fargate memory)을 뒤에 둔다.
+enum은 템플릿이 허용하는 값을 그대로 옮길 때만 건다. 범위를 AI 쪽에서 좁히지 않는다 (상한은 catalog·템플릿이 정한다).
 """
 import logging
 from typing import Any
 
-from app.catalog import FARGATE_MEMORY, fill_values
+from app.catalog import EC2_INSTANCE_TYPES, FARGATE_MEMORY, LAMBDA_MIN_PORT, fill_values
 
 logger = logging.getLogger(__name__)
 
 # AWS Fargate의 cpu별 memory 규칙. 템플릿이 허용하는 cpu(256·512·1024)에서는 catalog 표가 AWS 표와 같다
 _MEMORY_TABLE = " / ".join(f"cpu {cpu} → {', '.join(map(str, mems))}" for cpu, mems in FARGATE_MEMORY.items())
 
+# 컴퓨팅마다 같은 설명
+_PORT_HOW = "Dockerfile의 EXPOSE → ENV PORT → 코드의 listen 순서로 확인합니다. 코드로 확인하지 못하면 그 프레임워크의 기본 포트를 씁니다."
+_PORT = {"type": "integer", "description": f"앱이 컨테이너 안에서 요청을 받는 포트(1~65535 정수). {_PORT_HOW}"}
+_HEALTH = {
+    "type": "string",
+    "description": "배포 뒤 앱 상태를 확인할 HTTP 경로. 2xx·3xx를 돌려준다고 코드에서 확인한 GET 경로(예: /health)만 씁니다. "
+    "확인한 경로가 없으면 /입니다.",
+}
+
 TEMPLATE_FIELDS: dict[str, dict[str, dict[str, Any]]] = {
     "ecs-fargate": {
-        "container_port": {
-            "type": "integer",
-            "description": "앱이 컨테이너 안에서 요청을 받는 포트(1~65535 정수). Dockerfile의 EXPOSE → ENV PORT → 코드의 listen 순서로 확인합니다. "
-            "코드로 확인하지 못하면 그 프레임워크의 기본 포트를 씁니다.",
-        },
-        "health_check_path": {
-            "type": "string",
-            "description": "로드밸런서가 앱 상태를 확인할 HTTP 경로. 2xx·3xx를 돌려준다고 코드에서 확인한 GET 경로(예: /health)만 씁니다. "
-            "확인한 경로가 없으면 /입니다.",
-        },
+        "container_port": _PORT,
+        "health_check_path": _HEALTH,
         "cpu": {
             "type": "integer",
             "enum": list(FARGATE_MEMORY),
@@ -37,6 +39,33 @@ TEMPLATE_FIELDS: dict[str, dict[str, dict[str, Any]]] = {
             "enum": sorted({m for mems in FARGATE_MEMORY.values() for m in mems}),
             "description": f"Fargate 메모리(MiB). AWS 규칙상 cpu에 따라 고를 수 있는 값이 정해져 있습니다: {_MEMORY_TABLE}. "
             "반드시 고른 cpu의 값 중에서 고르고, 보통은 그중 가장 작은 값을 씁니다.",
+        },
+    },
+    "lambda": {
+        "container_port": {
+            "type": "integer",
+            "description": f"앱이 컨테이너 안에서 요청을 받는 포트({LAMBDA_MIN_PORT}~65535 정수). {_PORT_HOW} "
+            f"Lambda는 {LAMBDA_MIN_PORT} 미만 포트를 열 수 없어서, 확인한 포트가 그보다 작으면 앱이 PORT 환경변수를 읽을 때만 8080을 씁니다.",
+        },
+        "health_check_path": _HEALTH,
+        "memory": {
+            "type": "integer",
+            "description": "Lambda 메모리(MiB, 128~10240 정수). CPU도 메모리에 비례해 커집니다. 기본은 512이고, "
+            "JVM·머신러닝 라이브러리처럼 무거운 런타임일 때만 1024~2048로 키웁니다.",
+        },
+        "timeout": {
+            "type": "integer",
+            "description": "요청 하나가 실행될 수 있는 최대 시간(초, 1~900 정수). 기본은 30이고, "
+            "파일 변환처럼 오래 걸리는 요청을 코드에서 확인했을 때만 늘립니다.",
+        },
+    },
+    "ec2": {
+        "container_port": _PORT,
+        "health_check_path": _HEALTH,
+        "instance_type": {
+            "type": "string",
+            "enum": list(EC2_INSTANCE_TYPES),
+            "description": "EC2 서버 크기. 기본은 t3.micro이고, JVM·머신러닝 라이브러리처럼 무거운 런타임일 때만 t3.small·t3.medium으로 키웁니다.",
         },
     },
 }
