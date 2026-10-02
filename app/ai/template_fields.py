@@ -45,8 +45,9 @@ TEMPLATE_FIELDS: dict[str, dict[str, dict[str, Any]]] = {
 def fit_values(compute: str, raw: Any) -> dict[str, Any]:
     """AI 값을 필드 순서대로 하나씩 넣어 보며 검사(catalog.fill_values, AWS 규칙 포함)를 통과하는 것만 남긴다.
 
-    틀린 값 하나 때문에 맞는 값(예: 포트)까지 기본값으로 돌아가지 않게 한다. 버린 칸은 기본값으로 채운다.
-    돌려주는 값은 항상 검사를 통과한 완성본이다.
+    틀린 값 하나 때문에 맞는 값(예: 포트)까지 기본값으로 돌아가지 않게 한다.
+    돌려주는 값은 검사를 통과한 AI 값만이고 기본값은 채우지 않는다. 기본값은 구성안을 만들 때 채운다
+    (AI가 확인하지 못한 포트는 비워 두어 배포 워크플로가 Dockerfile EXPOSE를 쓰게 하려고).
     """
     raw = raw if isinstance(raw, dict) else {}
     kept: dict[str, Any] = {}
@@ -56,14 +57,14 @@ def fit_values(compute: str, raw: Any) -> dict[str, Any]:
         try:
             fill_values(compute, {**kept, name: raw[name]})
         except ValueError as e:
-            logger.warning("템플릿 값을 버리고 기본값을 씁니다 (%s.%s=%r): %s", compute, name, raw[name], e)
+            logger.warning("템플릿 값을 버립니다 (%s.%s=%r): %s", compute, name, raw[name], e)
             continue
         kept[name] = raw[name]
-    return fill_values(compute, kept)
+    return kept
 
 
 def fit_all(raw: Any) -> dict[str, dict[str, Any]]:
-    """모든 컴퓨팅의 값을 fit_values로 맞춘다. AI가 빠뜨린 컴퓨팅은 기본값이다."""
+    """모든 컴퓨팅의 값을 fit_values로 맞춘다. AI가 빠뜨린 컴퓨팅은 빈 값이다."""
     raw = raw if isinstance(raw, dict) else {}
     return {compute: fit_values(compute, raw.get(compute)) for compute in TEMPLATE_FIELDS}
 
