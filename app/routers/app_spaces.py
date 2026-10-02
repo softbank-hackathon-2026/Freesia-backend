@@ -315,7 +315,11 @@ def create_plan(app_space_id: str, body: PlanCreate, db: Session = Depends(get_d
 
 
 def _new_plan(db: Session, space: models.AppSpace, compute: str) -> models.Plan:
-    """AI가 분석 때 채운 템플릿 값으로 구성안을 만든다. 분석이 없거나 값이 틀리면 템플릿 기본값. commit은 부르는 쪽."""
+    """AI가 분석 때 채운 템플릿 값으로 구성안을 만든다. 분석이 없거나 값이 틀리면 템플릿 기본값. commit은 부르는 쪽.
+
+    포트는 AI가 확인하지 못했으면 비워 둔다. 배포 워크플로가 Dockerfile EXPOSE를 쓰고, 없으면 템플릿 기본값을 쓴다
+    (배포 레포 scripts/plan.py). 기본값 80을 넣으면 EXPOSE 3000인 앱이 헬스체크에서 실패한다.
+    """
     template = catalog.TEMPLATES[compute]
     latest = analysis.latest(db, space.id)
     done = latest if latest is not None and latest.status == "done" else None
@@ -323,7 +327,9 @@ def _new_plan(db: Session, space: models.AppSpace, compute: str) -> models.Plan:
     try:
         values = catalog.fill_values(compute, ai_values)
     except ValueError:
-        values = catalog.fill_values(compute)
+        ai_values, values = None, catalog.fill_values(compute)
+    if "container_port" not in (ai_values or {}):
+        values.pop("container_port", None)
     plan = models.Plan(
         id=new_id("plan"),
         app_space_id=space.id,
