@@ -81,7 +81,9 @@ def test_post_returns_running_then_result_is_saved(client, ai_on):
     space = create_space(client).json()
     r = client.post(url(space))
     # 응답은 running. TestClient는 응답 뒤 백그라운드 작업까지 끝낸 다음 돌아온다
-    assert r.json() == {"status": "running", "requirements": [], "evidence": [], "candidates": [], "mascot_message": None}
+    assert r.json() == {
+        "status": "running", "requirements": [], "evidence": [], "candidates": [], "mascot_message": None, "template_values": {},
+    }
     result = client.get(url(space)).json()
     assert result["status"] == "done"
     assert result["candidates"][0]["evidence_files"] == ["Dockerfile"]
