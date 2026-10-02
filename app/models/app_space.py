@@ -24,4 +24,6 @@ class AppSpace(Base):
     teardown_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     teardown_finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     teardown_reason: Mapped[str | None] = mapped_column(String(1000))
+    # 앱 삭제 = 목록에서 숨기기. 배포·분석 기록은 남긴다 (API 명세 6절)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

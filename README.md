@@ -37,7 +37,7 @@ API 계약은 [백엔드 API 명세 (Notion)](https://app.notion.com/p/3ec8bee9a
 |---|---|---|---|
 | 상태 확인 | `GET /api/health`, `/api/health/db`, `/api/version.txt` | 🟢 | 배포 성공 판정, Target Group 헬스체크 |
 | 저장소 | `GET` `POST /api/repositories`, `DELETE /api/repositories/{id}` | 🟢 | public GitHub 주소만, 기본 브랜치 `main` |
-| 앱 | `GET` `POST /api/app-spaces`, `GET /api/app-spaces/{id}` | 🟢 | 당분간 등록 안 된 저장소도 받음 |
+| 앱 | `GET` `POST /api/app-spaces`, `GET` `DELETE /api/app-spaces/{id}` | 🟢 | 당분간 등록 안 된 저장소도 받음. 삭제는 목록에서 숨기기, AWS에 떠 있으면 먼저 내려야 함 (`app_still_deployed`) |
 | 인프라 | `GET /api/infra-spaces`, `/api/infra-spaces/{id}` | 🟡 | 3개 중 퍼블릭만 실제 값. `deployable_computes`로 배포 가능 컴퓨팅 표시 |
 | AI 분석 | `POST` `GET /api/app-spaces/{id}/analysis` | 🟡 | `AI_MODEL_ID`가 없으면 샘플 결과 |
 | 구성안 | `POST /api/app-spaces/{id}/plans`, `GET ...?compute=` | 🟡 | 지금 값은 템플릿 기본값 |
@@ -71,7 +71,7 @@ app/
   ai/                AI 분석 모듈 (강효승 님): 저장소 읽기 repo.py, 모델 호출·검증 analyze.py
   models/            SQLAlchemy 모델: repositories, infra_spaces, app_spaces, analyses, plans, deployments
   routers/           API: health, repositories, infra_spaces, app_spaces, deployments, plans
-alembic/versions/    마이그레이션 0001~0006
+alembic/versions/    마이그레이션 0001~0007
 tests/               pytest (SQLite 메모리 DB)
 .github/workflows/   ci.yml (PR·main 검사), deploy.yml (main 머지 시 배포)
 .aws/                task-definition.json (서버 환경변수·비밀값 연결)

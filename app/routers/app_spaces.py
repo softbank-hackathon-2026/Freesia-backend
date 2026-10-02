@@ -33,6 +33,29 @@ TEARDOWN_TIMEOUT = timedelta(minutes=30)
 TEARDOWN_IN_PROGRESS = {"error": "teardown_in_progress", "message": "내리는 중입니다. 끝난 뒤에 다시 시도해 주세요."}
 
 
+def _in_progress(db: Session, space: models.AppSpace) -> models.Deployment | None:
+    return db.scalar(
+        select(models.Deployment).where(
+            models.Deployment.app_space_id == space.id, models.Deployment.status.not_in(deploy.FINISHED)
+        )
+    )
+
+
+def _real_deployments(db: Session, space: models.AppSpace, success_only: bool = False) -> bool:
+    """마지막으로 내린 뒤에 실제 워크플로로 배포한 적이 있는지.
+
+    run_id는 진짜 워크플로가 첫 콜백으로 보낸다. 가짜 진행은 채우지 않는다.
+    """
+    query = select(models.Deployment.id).where(
+        models.Deployment.app_space_id == space.id, models.Deployment.run_id.is_not(None)
+    )
+    if success_only:
+        query = query.where(models.Deployment.status == "success")
+    if space.teardown_status == "success":
+        query = query.where(models.Deployment.created_at > space.teardown_requested_at)
+    return db.scalar(query.limit(1)) is not None
+
+
 def _tearing_down(space: models.AppSpace) -> bool:
     if space.teardown_status != "requested":
         return False
@@ -55,7 +78,7 @@ def check_compute(infra: models.InfraSpace, compute: str) -> None:
 
 def find_app_space(db: Session, app_space_id: str) -> models.AppSpace:
     space = db.get(models.AppSpace, app_space_id)
-    if space is None:
+    if space is None or space.deleted_at is not None:
         raise HTTPException(404, detail={"error": "app_space_not_found", "message": "앱 Space를 찾을 수 없습니다."})
     return space
 
@@ -90,12 +113,41 @@ def create_app_space(body: AppSpaceCreate, db: Session = Depends(get_db)) -> mod
 
 @router.get("", response_model=list[AppSpace], summary="앱 Space 목록")
 def list_app_spaces(db: Session = Depends(get_db)) -> list[models.AppSpace]:
-    return list(db.scalars(select(models.AppSpace).order_by(models.AppSpace.created_at.desc())))
+    return list(
+        db.scalars(
+            select(models.AppSpace)
+            .where(models.AppSpace.deleted_at.is_(None))
+            .order_by(models.AppSpace.created_at.desc())
+        )
+    )
 
 
 @router.get("/{app_space_id}", response_model=AppSpace, summary="앱 Space 상세")
 def get_app_space(app_space_id: str, db: Session = Depends(get_db)) -> models.AppSpace:
     return find_app_space(db, app_space_id)
+
+
+@router.delete("/{app_space_id}", status_code=status.HTTP_204_NO_CONTENT, summary="앱 삭제 (목록에서 숨기기)")
+def delete_app_space(app_space_id: str, db: Session = Depends(get_db)) -> Response:
+    """앱을 목록에서 숨긴다. DB에서 지우지 않고 배포·분석 기록은 남긴다.
+
+    AWS에 떠 있는 앱은 먼저 내려야 한다. 숨기면 비용은 계속 나가는데 화면에서 내릴 수 없게 된다.
+    """
+    space = find_app_space(db, app_space_id)
+    if _in_progress(db, space):
+        raise HTTPException(
+            409, detail={"error": "deployment_in_progress", "message": "배포가 끝난 뒤에 삭제할 수 있습니다."}
+        )
+    if _tearing_down(space):
+        raise HTTPException(409, detail=TEARDOWN_IN_PROGRESS)
+    # 성공한 실제 배포만 센다. 빌드에서 멈춘 배포는 지울 자원이 없고, 내리기도 실패해서 영영 못 지우게 된다
+    if _real_deployments(db, space, success_only=True):
+        raise HTTPException(
+            409, detail={"error": "app_still_deployed", "message": "AWS에 배포되어 있는 앱입니다. 먼저 내려 주세요."}
+        )
+    space.deleted_at = now()
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/{app_space_id}/analysis", response_model=Analysis, summary="AI 분석 시작")
@@ -233,23 +285,11 @@ def teardown_app_space(app_space_id: str, db: Session = Depends(get_db)) -> Tear
     space = find_app_space(db, app_space_id)
     if _tearing_down(space):
         raise HTTPException(409, detail=TEARDOWN_IN_PROGRESS)
-    busy = db.scalar(
-        select(models.Deployment).where(
-            models.Deployment.app_space_id == space.id, models.Deployment.status.not_in(deploy.FINISHED)
-        )
-    )
-    if busy:
+    if _in_progress(db, space):
         raise HTTPException(
             409, detail={"error": "deployment_in_progress", "message": "배포가 끝난 뒤에 내릴 수 있습니다."}
         )
-    # run_id는 진짜 워크플로가 첫 콜백으로 보낸다. 가짜 진행은 채우지 않는다.
-    # 내리기에 성공했으면 그 뒤에 다시 배포한 것만 센다
-    query = select(models.Deployment).where(
-        models.Deployment.app_space_id == space.id, models.Deployment.run_id.is_not(None)
-    )
-    if space.teardown_status == "success":
-        query = query.where(models.Deployment.created_at > space.teardown_requested_at)
-    if not db.scalar(query):
+    if not _real_deployments(db, space):
         raise HTTPException(409, detail={"error": "not_deployed", "message": "실제로 배포된 자원이 없습니다."})
     callback_url = f"{get_settings().public_api_base}/app-spaces/{space.id}/teardown/callback"
     try:
