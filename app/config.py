@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     ai_timeout_seconds: int = 60  # 모델 응답 대기 상한 (API 명세 7절 3번)
     ai_schema_output: bool = True  # 모델이 JSON 스키마 출력(outputConfig)을 지원하지 않으면 false (예: Nova 2 Lite)
 
+    # Workload 계정 키: 배포된 앱의 지표·로그를 읽기만 한다 (모니터링, API 명세 12절). 서버는 Parameter Store
+    # /sbh/platform/demo/backend/WORKLOAD_AWS_* 값이 주입된다. AWS_* 이름을 쓰지 않는다: 그러면 Bedrock 호출(작업 역할)이 이 키를 집어 간다
+    workload_aws_access_key_id: str = ""
+    workload_aws_secret_access_key: str = ""
+    workload_aws_region: str = "ap-northeast-2"
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
