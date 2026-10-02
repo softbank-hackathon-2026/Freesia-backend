@@ -127,10 +127,13 @@ def test_bedrock_error_is_failed(repo_files, monkeypatch):
     assert (result.status, result.mascot_message) == ("failed", FAIL_MESSAGE)
 
 
-# 템플릿 값 (ADR-012). 틀린 칸만 기본값으로 바꾸고 분석은 그대로 쓴다
+# 템플릿 값 (ADR-012). 틀린 칸만 버리고 분석은 그대로 쓴다. 기본값은 구성안을 만들 때 채운다
 
 GOOD = {"container_port": 3000, "health_check_path": "/health", "cpu": 256, "memory": 512}
-DEFAULTS = catalog.fill_values("ecs-fargate")
+
+
+def without(values, *names):
+    return {k: v for k, v in values.items() if k not in names}
 
 
 def test_template_values_saved(repo_files, model):
@@ -142,13 +145,13 @@ def test_template_values_saved(repo_files, model):
 @pytest.mark.parametrize(
     "given,expected",
     [
-        ({**GOOD, "memory": 4096}, GOOD),  # cpu 256에 없는 memory만 버리고 포트는 지킨다
-        ({**GOOD, "cpu": 1024, "memory": 512}, {**GOOD, "cpu": 1024, "memory": 2048}),  # 그 cpu의 가장 작은 memory
-        ({**GOOD, "cpu": 2048}, GOOD),  # 템플릿 밖 cpu
-        ({**GOOD, "container_port": "3000"}, {**GOOD, "container_port": 80}),
-        ({**GOOD, "health_check_path": "health"}, {**GOOD, "health_check_path": "/"}),
-        ({"port": 3000}, DEFAULTS),  # 모르는 이름은 무시된다
-        ("모양이 틀림", DEFAULTS),
+        ({**GOOD, "memory": 4096}, without(GOOD, "memory")),  # cpu 256에 없는 memory만 버리고 포트는 지킨다
+        ({**GOOD, "cpu": 1024, "memory": 512}, {**without(GOOD, "memory"), "cpu": 1024}),  # cpu 1024에 없는 memory
+        ({**GOOD, "cpu": 2048}, without(GOOD, "cpu")),  # 템플릿 밖 cpu
+        ({**GOOD, "container_port": "3000"}, without(GOOD, "container_port")),
+        ({**GOOD, "health_check_path": "health"}, without(GOOD, "health_check_path")),
+        ({"port": 3000}, {}),  # 모르는 이름은 무시된다
+        ("모양이 틀림", {}),
     ],
 )
 def test_wrong_template_values_fall_back_per_field(repo_files, model, given, expected):
@@ -158,10 +161,10 @@ def test_wrong_template_values_fall_back_per_field(repo_files, model, given, exp
 
 
 @pytest.mark.parametrize("over", [{}, {"template_values": ["모양이 틀림"]}])
-def test_missing_template_values_use_defaults(repo_files, model, over):
+def test_missing_template_values_are_empty(repo_files, model, over):
     model(output(**over))
     result, _ = run_analysis(URL, "main", COMPUTES)
-    assert result.status == "done" and result.template_values == {"ecs-fargate": DEFAULTS}
+    assert result.status == "done" and result.template_values == {"ecs-fargate": {}}
 
 
 def test_failed_has_no_template_values(repo_files, model):
