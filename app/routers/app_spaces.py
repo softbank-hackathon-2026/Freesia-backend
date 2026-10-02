@@ -3,7 +3,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import analysis, catalog, deploy, models
+from app import analysis, catalog, deploy, github, models
 from app.config import get_settings
 from app.db import get_db
 from app.ids import new_id, now
@@ -16,6 +16,8 @@ from app.schemas import (
     DeploymentCreate,
     PlanCreate,
     PlanSet,
+    Teardown,
+    parse_github_url,
 )
 
 router = APIRouter(prefix="/app-spaces", tags=["app-spaces"])
@@ -156,7 +158,82 @@ def create_deployment(
     db.commit()
     if get_settings().deploy_simulate:
         background.add_task(deploy.simulate, dep.id)
+    else:
+        _start_workflow(db, space, dep)
     return dep
+
+
+def _start_workflow(db: Session, space: models.AppSpace, dep: models.Deployment) -> None:
+    """배포 레포 deploy.yml을 실행한다 (ADR-009). 배포를 먼저 저장해 두어야 곧바로 오는 콜백을 받을 수 있다.
+
+    실행 요청이 실패하면 배포를 바로 failed로 남긴다. 진행 상황은 이후 워크플로 콜백으로 온다.
+    """
+    try:
+        latest = analysis.latest(db, space.id)
+        # 분석한 코드와 배포하는 코드를 같게 맞춘다. 분석 커밋이 없으면 브랜치 최신 커밋
+        dep.commit_sha = (latest.commit_sha if latest is not None and latest.commit_sha else None) or (
+            github.latest_commit(space.repo_url, space.branch)
+        )
+        # 워크플로는 plan_id로 템플릿·값·VPC를 받아 간다. 구성안 없이 배포하면 기본값 구성안을 만든다
+        if dep.plan_id is None:
+            dep.plan_id = _new_plan(db, space, dep.compute).id
+        db.commit()
+        owner, repo = parse_github_url(space.repo_url)
+        github.dispatch(
+            "deploy.yml",
+            {
+                "deployment_id": dep.id,
+                "application_id": space.id,
+                "repo": f"{owner}/{repo}",
+                "commit_sha": dep.commit_sha,
+                "infra_id": space.infra_id,
+                "compute": dep.compute,
+                "plan_id": dep.plan_id,
+                "callback_url": f"{get_settings().public_api_base}/deployments/{dep.id}/callback",
+            },
+        )
+    except github.GitHubError as e:
+        deploy.record_event(db, dep, "failed", dep.step, reason=str(e))
+        db.commit()
+
+
+@router.post(
+    "/{app_space_id}/teardown",
+    response_model=Teardown,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="배포된 앱 내리기",
+)
+def teardown_app_space(app_space_id: str, db: Session = Depends(get_db)) -> Teardown:
+    """배포 레포 Destroy 워크플로로 그 앱의 AWS 자원(ECS 서비스, 로드밸런서, 로그 그룹 등)을 지운다.
+
+    실제로 배포된 적 있는 앱만 내릴 수 있다. 가짜 진행만 한 앱은 지울 자원이 없다.
+    앱 기록은 남고 다시 배포할 수 있다. 내리기가 끝났는지는 Destroy 워크플로 콜백이 생기면 알 수 있다.
+    """
+    space = find_app_space(db, app_space_id)
+    busy = db.scalar(
+        select(models.Deployment).where(
+            models.Deployment.app_space_id == space.id, models.Deployment.status.not_in(deploy.FINISHED)
+        )
+    )
+    if busy:
+        raise HTTPException(
+            409, detail={"error": "deployment_in_progress", "message": "배포가 끝난 뒤에 내릴 수 있습니다."}
+        )
+    # run_id는 진짜 워크플로가 첫 콜백으로 보낸다. 가짜 진행은 채우지 않는다
+    deployed = db.scalar(
+        select(models.Deployment).where(
+            models.Deployment.app_space_id == space.id, models.Deployment.run_id.is_not(None)
+        )
+    )
+    if not deployed:
+        raise HTTPException(409, detail={"error": "not_deployed", "message": "실제로 배포된 자원이 없습니다."})
+    try:
+        github.dispatch("destroy.yml", {"application_id": space.id, "confirm": space.id})
+    except github.GitHubError as e:
+        raise HTTPException(502, detail={"error": "teardown_failed", "message": str(e)}) from e
+    space.teardown_requested_at = now()
+    db.commit()
+    return Teardown(app_space_id=space.id, requested_at=space.teardown_requested_at)
 
 
 def _plan_set(compute: str, plans: list[models.Plan]) -> PlanSet:
@@ -171,15 +248,22 @@ def create_plan(app_space_id: str, body: PlanCreate, db: Session = Depends(get_d
     """
     space = find_app_space(db, app_space_id)
     check_compute(db.get(models.InfraSpace, space.infra_id), body.compute)
-    template = catalog.TEMPLATES[body.compute]
+    plan = _new_plan(db, space, body.compute)
+    db.commit()
+    return _plan_set(body.compute, [plan])
+
+
+def _new_plan(db: Session, space: models.AppSpace, compute: str) -> models.Plan:
+    """템플릿 기본값으로 구성안을 만든다. AI가 값을 채우게 되면 fill_values에 AI 값을 넘긴다. commit은 부르는 쪽."""
+    template = catalog.TEMPLATES[compute]
     latest = analysis.latest(db, space.id)
     plan = models.Plan(
         id=new_id("plan"),
         app_space_id=space.id,
         analysis_id=latest.id if latest is not None and latest.status == "done" else None,
-        compute=body.compute,
+        compute=compute,
         template=template.name,
-        values=catalog.fill_values(body.compute),
+        values=catalog.fill_values(compute),
         name=template.plan_name,
         summary=template.summary,
         pros=template.pros,
@@ -187,8 +271,8 @@ def create_plan(app_space_id: str, body: PlanCreate, db: Session = Depends(get_d
         created_at=now(),
     )
     db.add(plan)
-    db.commit()
-    return _plan_set(body.compute, [plan])
+    db.flush()
+    return plan
 
 
 @router.get("/{app_space_id}/plans", response_model=PlanSet, summary="구성안 보기")

@@ -47,6 +47,7 @@ erDiagram
         varchar branch
         varchar infra_id FK
         varchar latest_deployment_id
+        timestamptz teardown_requested_at
         timestamptz created_at
     }
 
@@ -168,6 +169,7 @@ erDiagram
 | `branch` | varchar(255) | | O | |
 | `infra_id` | varchar(64) | FK → infra_spaces | O | 올릴 인프라 |
 | `latest_deployment_id` | varchar(32) | | | 최근 배포 (`deployments.id`) |
+| `teardown_requested_at` | timestamptz | | | 내리기(`destroy.yml`)를 요청한 시각. 비어 있으면 요청한 적 없음 (마이그레이션 0005) |
 | `created_at` | timestamptz | | O | |
 
 ### analyses (AI 견적) · 구현됨

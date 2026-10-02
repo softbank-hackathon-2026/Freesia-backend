@@ -16,6 +16,7 @@ def real_mode(monkeypatch):
     """배포 레포가 연결된 상태: 가짜 진행을 끄고 콜백 서명 키를 넣는다."""
     monkeypatch.setattr(get_settings(), "deploy_simulate", False)
     monkeypatch.setattr(get_settings(), "deploy_callback_secret", SECRET)
+    monkeypatch.setattr(get_settings(), "github_deploy_token", "test-token")
 
 
 def start(client, compute="ecs-fargate", **extra):

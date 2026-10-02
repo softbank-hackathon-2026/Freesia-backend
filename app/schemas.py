@@ -99,6 +99,7 @@ class AppSpace(BaseModel):
     infra_id: str
     created_at: UtcDatetime
     latest_deployment_id: str | None = None
+    teardown_requested_at: UtcDatetime | None = Field(None, description="내리기를 요청한 시각. 없으면 내린 적 없음")
 
 
 class Evidence(BaseModel):
@@ -168,6 +169,14 @@ class WorkflowPlan(BaseModel):
     template: str
     values: dict[str, Any]
     infra: PlanInfra
+
+
+class Teardown(BaseModel):
+    """배포된 앱 내리기 요청 결과. 실제 삭제는 배포 레포 Destroy 워크플로가 한다."""
+
+    app_space_id: str
+    status: Literal["requested"] = "requested"
+    requested_at: UtcDatetime
 
 
 class DeploymentCreate(BaseModel):

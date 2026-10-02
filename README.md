@@ -41,11 +41,12 @@ API 계약은 [백엔드 API 명세 (Notion)](https://app.notion.com/p/3ec8bee9a
 | 인프라 | `GET /api/infra-spaces`, `/api/infra-spaces/{id}` | 🟡 | 3개 중 퍼블릭만 실제 값. `deployable_computes`로 배포 가능 컴퓨팅 표시 |
 | AI 분석 | `POST` `GET /api/app-spaces/{id}/analysis` | 🟡 | `AI_MODEL_ID`가 없으면 샘플 결과 |
 | 구성안 | `POST /api/app-spaces/{id}/plans`, `GET ...?compute=` | 🟡 | 지금 값은 템플릿 기본값 |
-| 배포 | `POST /api/app-spaces/{id}/deployments` | 🟡 | `DEPLOY_SIMULATE=true`라 가짜 진행(약 8초) |
+| 배포 | `POST /api/app-spaces/{id}/deployments` | 🟡 | `DEPLOY_SIMULATE=true`라 가짜 진행(약 8초). `false`면 `deploy.yml` 실행 |
 | | `GET /api/deployments/{id}`, `/events` (SSE) | 🟡 | 가짜 진행 결과 |
 | | `GET /api/deployments/{id}/resources` | 🟠 | 콜백이 와야 채워짐 |
-| 워크플로 전용 | `POST /api/deployments/{id}/callback` | 🟠 | 서버에 서명 키 연결 전이라 모두 401 |
-| | `GET /api/plans/{plan_id}` | 🟠 | 같은 이유로 401 |
+| 내리기 | `POST /api/app-spaces/{id}/teardown` | 🟠 | `destroy.yml` 실행. 실제 워크플로로 배포된 적 있어야 함 (`not_deployed`) |
+| 워크플로 전용 | `POST /api/deployments/{id}/callback` | 🟠 | 서버 준비 완료(서명 키 연결). 워크플로 실행 후 동작 |
+| | `GET /api/plans/{plan_id}` | 🟠 | 같음 |
 
 에러는 모두 `{"error": "코드", "message": "설명"}`입니다. 요청·응답 모양은 Swagger와 Notion 명세를 봐 주세요.
 
@@ -62,11 +63,12 @@ app/
   analysis.py        AI 분석 실행·저장 (백그라운드, running 멈춤 방지)
   deploy.py          배포 진행 기록 (콜백과 가짜 진행이 함께 씀)
   signing.py         워크플로가 부르는 API의 서명 확인
+  github.py          GitHub 호출: 배포할 커밋 확인, 배포 레포 워크플로 실행 (workflow_dispatch)
   mock_data.py       샘플 분석 결과 (모델 연결 전)
   ai/                AI 분석 모듈 (강효승 님): 저장소 읽기 repo.py, 모델 호출·검증 analyze.py
   models/            SQLAlchemy 모델: repositories, infra_spaces, app_spaces, analyses, plans, deployments
   routers/           API: health, repositories, infra_spaces, app_spaces, deployments, plans
-alembic/versions/    마이그레이션 0001~0004
+alembic/versions/    마이그레이션 0001~0005
 tests/               pytest (SQLite 메모리 DB)
 .github/workflows/   ci.yml (PR·main 검사), deploy.yml (main 머지 시 배포)
 .aws/                task-definition.json (서버 환경변수·비밀값 연결)
@@ -85,6 +87,8 @@ docs/                erd.md, handoff.md
 | `APP_VERSION` | `dev` | 빌드 때 커밋 SHA (`/api/version.txt`) |
 | `DEPLOY_SIMULATE` | `true` | `true`면 워크플로 대신 가짜 진행 |
 | `DEPLOY_CALLBACK_SECRET` | 빈 값 | 콜백·값 조회 서명 키. 비어 있으면 모두 401 |
+| `GITHUB_DEPLOY_TOKEN` | 빈 값 | 배포 레포 워크플로 실행 토큰. 비어 있으면 진짜 배포·내리기가 실패로 기록됨 |
+| `DEPLOY_REPO`, `DEPLOY_REF`, `PUBLIC_API_BASE` | `softbank-hackathon-2026/workload-deploy`, `main`, `https://sbh.howon.me/api` | 실행할 배포 레포와 콜백 주소 |
 | `AI_MODEL_ID` | 빈 값 | 비어 있으면 분석은 샘플 결과 |
 | `AI_AWS_REGION`, `AI_TIMEOUT_SECONDS`, `AI_SCHEMA_OUTPUT` | `ap-northeast-2`, `60`, `true` | AI 호출 설정 |
 
@@ -121,9 +125,10 @@ alembic upgrade head
 - [x] 콜백·자원별 상태·워크플로 값 조회 API (서명 확인)
 - [x] AI 분석 모듈 연결 (모델 없으면 샘플)
 - [x] 프론트 연동 확인 (`?source=api`, 저장소 등록 → 배포 완료까지)
-- [ ] 서명 키·GitHub 토큰 Task Definition 연결 (정호원 님 권한 작업 후)
-- [ ] 워크플로 실행(`workflow_dispatch`)과 가짜 진행 끄기
+- [x] 서명 키·GitHub 토큰 Task Definition 연결
+- [x] 워크플로 실행 코드(`deploy.yml`, `destroy.yml`). `DEPLOY_SIMULATE=false`로 켬
+- [ ] 진짜 워크플로로 한 번 배포해 보고 가짜 진행 끄기
 - [ ] AI 모델 연결, AI가 구성안 값 채우기 (강효승 님)
 - [ ] 나머지 인프라 2종 실제 값 (박준서 님)
 - [ ] 가짜 진행이 서버 교체로 멈추지 않게, 30분 시간 초과
-- [ ] 배포 내리기 API, 모니터링(지표·로그) API
+- [ ] 모니터링(지표·로그) API, 내리기 완료 콜백(배포 레포와 협의)

@@ -19,4 +19,6 @@ class AppSpace(Base):
     branch: Mapped[str] = mapped_column(String(255))
     infra_id: Mapped[str] = mapped_column(String(64), ForeignKey("infra_spaces.id"))
     latest_deployment_id: Mapped[str | None] = mapped_column(String(32))
+    # 배포 레포 Destroy 워크플로 실행을 요청한 시각. 끝났는지는 아직 알 수 없다(내리기 콜백 전)
+    teardown_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
