@@ -124,6 +124,11 @@ class Analysis(BaseModel):
     evidence: list[Evidence] = []
     candidates: list[Candidate] = []
     mascot_message: str | None = Field(None, description="마스코트가 말할 한 줄 설명")
+    template_values: dict[str, dict[str, Any]] = Field(
+        {},
+        description="컴퓨팅별 배포 템플릿 값 (ADR-012). 검사를 통과한 값만 있고, 구성안을 만들 때 쓴다",
+        examples=[{"ecs-fargate": {"container_port": 3000, "cpu": 256, "memory": 512, "health_check_path": "/health"}}],
+    )
 
 
 class PlanCreate(BaseModel):

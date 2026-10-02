@@ -3,9 +3,11 @@ import json
 
 import pytest
 
+from app import catalog
 from app.ai import analyze
 from app.ai.analyze import FAIL_MESSAGE, NO_DOCKERFILE_MESSAGE, run_analysis
 from app.ai.repo import RepoError
+from app.ai.template_fields import TEMPLATE_FIELDS
 
 URL = "https://github.com/org/app"
 SHA = "a" * 40
@@ -123,3 +125,55 @@ def test_bedrock_error_is_failed(repo_files, monkeypatch):
     monkeypatch.setattr(analyze, "_converse", denied)
     result, _ = run_analysis(URL, "main", COMPUTES)
     assert (result.status, result.mascot_message) == ("failed", FAIL_MESSAGE)
+
+
+# 템플릿 값 (ADR-012). 틀린 칸만 기본값으로 바꾸고 분석은 그대로 쓴다
+
+GOOD = {"container_port": 3000, "health_check_path": "/health", "cpu": 256, "memory": 512}
+DEFAULTS = catalog.fill_values("ecs-fargate")
+
+
+def test_template_values_saved(repo_files, model):
+    model(output(template_values={"ecs-fargate": GOOD}))
+    result, _ = run_analysis(URL, "main", COMPUTES)
+    assert result.template_values == {"ecs-fargate": GOOD}
+
+
+@pytest.mark.parametrize(
+    "given,expected",
+    [
+        ({**GOOD, "memory": 4096}, GOOD),  # cpu 256에 없는 memory만 버리고 포트는 지킨다
+        ({**GOOD, "cpu": 1024, "memory": 512}, {**GOOD, "cpu": 1024, "memory": 2048}),  # 그 cpu의 가장 작은 memory
+        ({**GOOD, "cpu": 2048}, GOOD),  # 템플릿 밖 cpu
+        ({**GOOD, "container_port": "3000"}, {**GOOD, "container_port": 80}),
+        ({**GOOD, "health_check_path": "health"}, {**GOOD, "health_check_path": "/"}),
+        ({"port": 3000}, DEFAULTS),  # 모르는 이름은 무시된다
+        ("모양이 틀림", DEFAULTS),
+    ],
+)
+def test_wrong_template_values_fall_back_per_field(repo_files, model, given, expected):
+    model(output(template_values={"ecs-fargate": given}))
+    result, _ = run_analysis(URL, "main", COMPUTES)
+    assert result.status == "done" and result.template_values["ecs-fargate"] == expected
+
+
+@pytest.mark.parametrize("over", [{}, {"template_values": ["모양이 틀림"]}])
+def test_missing_template_values_use_defaults(repo_files, model, over):
+    model(output(**over))
+    result, _ = run_analysis(URL, "main", COMPUTES)
+    assert result.status == "done" and result.template_values == {"ecs-fargate": DEFAULTS}
+
+
+def test_failed_has_no_template_values(repo_files, model):
+    model(output(status="failed", requirements=[], evidence=[], candidates=[], mascot_message="웹 앱이 아니에요",
+                 template_values={"ecs-fargate": GOOD}))
+    result, _ = run_analysis(URL, "main", COMPUTES)
+    assert result.template_values == {}
+
+
+def test_template_fields_match_catalog():
+    """양식의 이름이 catalog(= variables.tf)와 다르면 AI 값이 오류 없이 버려진다. 템플릿을 추가할 때 여기서 잡는다."""
+    for compute, fields in TEMPLATE_FIELDS.items():
+        assert catalog.is_ready(compute), compute
+        assert set(catalog.fill_values(compute)) == set(fields), compute
+    assert set(analyze.RESULT_SCHEMA["properties"]["template_values"]["required"]) == set(TEMPLATE_FIELDS)
