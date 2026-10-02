@@ -38,7 +38,7 @@ API 계약은 [백엔드 API 명세 (Notion)](https://app.notion.com/p/3ec8bee9a
 | 상태 확인 | `GET /api/health`, `/api/health/db`, `/api/version.txt` | 🟢 | 배포 성공 판정, Target Group 헬스체크 |
 | 저장소 | `GET` `POST /api/repositories`, `DELETE /api/repositories/{id}` | 🟢 | public GitHub 주소만, 기본 브랜치 `main` |
 | 앱 | `GET` `POST /api/app-spaces`, `GET` `DELETE /api/app-spaces/{id}` | 🟢 | 당분간 등록 안 된 저장소도 받음. 삭제는 목록에서 숨기기, AWS에 떠 있으면 먼저 내려야 함 (`app_still_deployed`) |
-| 인프라 | `GET /api/infra-spaces`, `/api/infra-spaces/{id}` | 🟡 | 3개 중 퍼블릭만 실제 값. `deployable_computes`로 배포 가능 컴퓨팅 표시 |
+| 인프라 | `GET /api/infra-spaces`, `/api/infra-spaces/{id}`, `POST /api/infra-spaces/sync` | 🟢 | 갱신(`sync`)이 Workload 계정에서 `InfraId` 태그가 붙은 VPC·서브넷을 읽어 DB를 채움. `deployable_computes`로 배포 가능 여부 표시 |
 | AI 분석 | `POST` `GET /api/app-spaces/{id}/analysis` | 🟡 | `AI_MODEL_ID`가 없으면 샘플 결과 |
 | 구성안 | `POST /api/app-spaces/{id}/plans`, `GET ...?compute=` | 🟡 | 지금 값은 템플릿 기본값 |
 | 배포 | `POST /api/app-spaces/{id}/deployments` | 🟡 | `DEPLOY_SIMULATE=true`라 가짜 진행(약 8초). `false`면 `deploy.yml` 실행 |
@@ -65,6 +65,8 @@ app/
   analysis.py        AI 분석 실행·저장 (백그라운드, running 멈춤 방지)
   deploy.py          배포 진행 기록 (콜백과 가짜 진행이 함께 씀)
   signing.py         워크플로가 부르는 API의 서명 확인
+  aws.py             Workload 계정 boto3 클라이언트 (WORKLOAD_AWS_* 키, 읽기만)
+  infra_sync.py      인프라 갱신: InfraId 태그로 VPC·서브넷을 읽어 infra_spaces를 채움
   monitoring.py      배포된 앱의 지표·로그 조회 (Workload 계정 CloudWatch, 읽기만)
   github.py          GitHub 호출: 배포할 커밋 확인, 배포 레포 워크플로 실행 (workflow_dispatch)
   mock_data.py       샘플 분석 결과 (모델 연결 전)

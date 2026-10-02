@@ -46,6 +46,8 @@ def _db(monkeypatch):
                     computes=computes,
                     status="ready",
                     vpc_id=vpc_id,
+                    # 배포 가능한 인프라는 서로 다른 AZ의 퍼블릭 서브넷 2개가 있다 (infra_spaces.is_deployable)
+                    public_subnet_ids=["subnet-a", "subnet-c"] if vpc_id else None,
                     created_at=base + timedelta(seconds=i),
                 )
             )
