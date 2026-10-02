@@ -41,6 +41,8 @@ DeploymentStatus = Literal["pending", "building", "deploying", "success", "faile
 DeploymentStep = Literal["queued", "prepare", "build", "deploy", "verify", "done"]
 Compute = Literal["ecs-fargate", "lambda", "ec2"]
 AnalysisStatus = Literal["pending", "running", "done", "failed"]
+# 내리기 상태 (API 명세 9-5절). requested 뒤에 Destroy 워크플로 콜백으로 success·failed가 된다
+TeardownStatus = Literal["requested", "success", "failed"]
 CandidateState = Literal["selected", "alternative", "unsuitable"]
 ResourceState = Literal["pending", "in_progress", "done", "failed"]
 
@@ -99,7 +101,10 @@ class AppSpace(BaseModel):
     infra_id: str
     created_at: UtcDatetime
     latest_deployment_id: str | None = None
-    teardown_requested_at: UtcDatetime | None = Field(None, description="내리기를 요청한 시각. 없으면 내린 적 없음")
+    teardown_status: TeardownStatus | None = Field(None, description="내리기 상태. 없으면 내린 적 없음")
+    teardown_requested_at: UtcDatetime | None = Field(None, description="내리기를 요청한 시각")
+    teardown_finished_at: UtcDatetime | None = Field(None, description="내리기가 끝난 시각 (success·failed)")
+    teardown_reason: str | None = Field(None, description="내리기 실패 이유")
 
 
 class Evidence(BaseModel):
@@ -182,6 +187,13 @@ class Teardown(BaseModel):
     app_space_id: str
     status: Literal["requested"] = "requested"
     requested_at: UtcDatetime
+
+
+class TeardownCallback(BaseModel):
+    """Destroy 워크플로 → 백엔드 내리기 결과 (API 명세 9-5절)."""
+
+    status: Literal["success", "failed"]
+    reason: str | None = Field(None, description="실패 이유")
 
 
 class DeploymentCreate(BaseModel):

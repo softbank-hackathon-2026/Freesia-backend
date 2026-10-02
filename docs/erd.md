@@ -47,7 +47,10 @@ erDiagram
         varchar branch
         varchar infra_id FK
         varchar latest_deployment_id
+        varchar teardown_status "requested / success / failed"
         timestamptz teardown_requested_at
+        timestamptz teardown_finished_at
+        varchar teardown_reason
         timestamptz created_at
     }
 
@@ -169,7 +172,10 @@ erDiagram
 | `branch` | varchar(255) | | O | |
 | `infra_id` | varchar(64) | FK → infra_spaces | O | 올릴 인프라 |
 | `latest_deployment_id` | varchar(32) | | | 최근 배포 (`deployments.id`) |
-| `teardown_requested_at` | timestamptz | | | 내리기(`destroy.yml`)를 요청한 시각. 비어 있으면 요청한 적 없음 (마이그레이션 0005) |
+| `teardown_status` | varchar(20) | | | 내리기(`destroy.yml`) 상태. `requested` → 내리기 콜백으로 `success` / `failed`. 비어 있으면 내린 적 없음 (마이그레이션 0005) |
+| `teardown_requested_at` | timestamptz | | | 내리기를 요청한 시각. 30분 안에 콜백이 없으면 다시 요청할 수 있다 |
+| `teardown_finished_at` | timestamptz | | | 내리기 콜백을 받은 시각 |
+| `teardown_reason` | varchar(1000) | | | 내리기 실패 이유 |
 | `created_at` | timestamptz | | O | |
 
 ### analyses (AI 견적) · 구현됨

@@ -1,18 +1,24 @@
 """워크플로 실행(배포·내리기). GitHub은 가짜로 바꿔 끼운다."""
+import hashlib
+import hmac
 import json
 
 import pytest
 
 from app import github, models
 from app.config import get_settings
+from app.routers import app_spaces
 from tests.conftest import FAKE_SHA as SHA, TestingSession
 from tests.test_app_spaces import REPO, create_space
+
+SECRET = "test-callback-secret"
 
 
 @pytest.fixture
 def real_mode(monkeypatch):
     monkeypatch.setattr(get_settings(), "deploy_simulate", False)
     monkeypatch.setattr(get_settings(), "github_deploy_token", "test-token")
+    monkeypatch.setattr(get_settings(), "deploy_callback_secret", SECRET)
 
 
 def dispatches(state):
@@ -106,55 +112,138 @@ def test_simulate_mode_does_not_call_github(client, gh):
 # 내리기
 
 
-def mark_deployed(space_id):
+def mark_deployed(space_id, status="success"):
     """진짜 워크플로가 돈 배포 흔적(run_id)을 남긴다."""
     with TestingSession() as db:
-        dep = db.get(models.AppSpace, space_id).latest_deployment_id
-        row = db.get(models.Deployment, dep)
-        row.run_id = 123
+        row = db.get(models.Deployment, db.get(models.AppSpace, space_id).latest_deployment_id)
+        row.status, row.run_id = status, 123
         db.commit()
+
+
+def deployed_space(client):
+    space, _ = start(client)
+    mark_deployed(space["id"])
+    return space
+
+
+def teardown(client, space):
+    return client.post(f"/api/app-spaces/{space['id']}/teardown")
+
+
+def teardown_callback(client, space, body, secret=SECRET):
+    data = json.dumps(body).encode()
+    sig = "sha256=" + hmac.new(secret.encode(), data, hashlib.sha256).hexdigest()
+    return client.post(
+        f"/api/app-spaces/{space['id']}/teardown/callback",
+        content=data,
+        headers={"X-Hub-Signature-256": sig, "Content-Type": "application/json"},
+    )
+
+
+def app_of(client, space):
+    return client.get(f"/api/app-spaces/{space['id']}").json()
 
 
 def test_teardown_dispatches_destroy(client, real_mode, gh):
-    space, _ = start(client)
-    deps = client.get(f"/api/app-spaces/{space['id']}").json()["latest_deployment_id"]
-    with TestingSession() as db:
-        row = db.get(models.Deployment, deps)
-        row.status, row.run_id = "success", 123
-        db.commit()
-    r = client.post(f"/api/app-spaces/{space['id']}/teardown")
+    space = deployed_space(client)
+    r = teardown(client, space)
     assert r.status_code == 202
     assert r.json()["status"] == "requested"
     req = dispatches(gh)[-1]
     assert req.url.path.endswith("/workflows/destroy.yml/dispatches")
-    assert json.loads(req.content)["inputs"] == {"application_id": space["id"], "confirm": space["id"]}
-    assert client.get(f"/api/app-spaces/{space['id']}").json()["teardown_requested_at"]
+    assert json.loads(req.content)["inputs"] == {
+        "application_id": space["id"],
+        "confirm": space["id"],
+        "callback_url": f"https://sbh.howon.me/api/app-spaces/{space['id']}/teardown/callback",
+    }
+    got = app_of(client, space)
+    assert got["teardown_status"] == "requested" and got["teardown_requested_at"]
+
+
+def test_teardown_success_callback(client, real_mode, gh):
+    space = deployed_space(client)
+    teardown(client, space)
+    assert teardown_callback(client, space, {"status": "success"}).status_code == 204
+    got = app_of(client, space)
+    assert (got["teardown_status"], got["teardown_reason"]) == ("success", None)
+    assert got["teardown_finished_at"]
+    # 내린 뒤에는 다시 배포하기 전까지 내릴 것이 없다
+    r = teardown(client, space)
+    assert (r.status_code, r.json()["error"]) == (409, "not_deployed")
+
+
+def test_teardown_failed_callback_can_retry(client, real_mode, gh):
+    space = deployed_space(client)
+    teardown(client, space)
+    reason = "이 앱의 배포 기록(State)을 찾지 못했습니다."
+    assert teardown_callback(client, space, {"status": "failed", "reason": reason}).status_code == 204
+    got = app_of(client, space)
+    assert (got["teardown_status"], got["teardown_reason"]) == ("failed", reason)
+    assert teardown(client, space).status_code == 202
+    assert app_of(client, space)["teardown_reason"] is None
+
+
+def test_redeploy_after_teardown_can_be_torn_down(client, real_mode, gh):
+    space = deployed_space(client)
+    teardown(client, space)
+    teardown_callback(client, space, {"status": "success"})
+    client.post(f"/api/app-spaces/{space['id']}/deployments", json={"compute": "ecs-fargate"})
+    mark_deployed(space["id"])
+    assert teardown(client, space).status_code == 202
+
+
+def test_no_deploy_or_second_teardown_while_tearing_down(client, real_mode, gh):
+    space = deployed_space(client)
+    teardown(client, space)
+    r = client.post(f"/api/app-spaces/{space['id']}/deployments", json={"compute": "ecs-fargate"})
+    assert (r.status_code, r.json()["error"]) == (409, "teardown_in_progress")
+    r = teardown(client, space)
+    assert (r.status_code, r.json()["error"]) == (409, "teardown_in_progress")
+
+
+def test_lost_teardown_callback_times_out(client, real_mode, gh):
+    space = deployed_space(client)
+    teardown(client, space)
+    with TestingSession() as db:
+        row = db.get(models.AppSpace, space["id"])
+        row.teardown_requested_at = row.teardown_requested_at - app_spaces.TEARDOWN_TIMEOUT
+        db.commit()
+    assert teardown(client, space).status_code == 202
+
+
+def test_teardown_callback_checks_signature(client, real_mode, gh):
+    space = deployed_space(client)
+    teardown(client, space)
+    assert teardown_callback(client, space, {"status": "success"}, secret="wrong").status_code == 401
+    assert app_of(client, space)["teardown_status"] == "requested"
+
+
+def test_teardown_callback_without_request(client, real_mode):
+    space = deployed_space(client)
+    r = teardown_callback(client, space, {"status": "success"})
+    assert (r.status_code, r.json()["error"]) == (409, "teardown_not_requested")
 
 
 def test_teardown_without_real_deployment(client, gh):
     space, _ = start(client)  # 가짜 진행만 함
-    r = client.post(f"/api/app-spaces/{space['id']}/teardown")
+    r = teardown(client, space)
     assert (r.status_code, r.json()["error"]) == (409, "not_deployed")
     assert dispatches(gh) == []
 
 
 def test_teardown_while_deploying(client, real_mode, gh):
     space, _ = start(client)  # 진짜 모드: 콜백이 오기 전이라 pending
-    mark_deployed(space["id"])
-    r = client.post(f"/api/app-spaces/{space['id']}/teardown")
+    mark_deployed(space["id"], status="pending")
+    r = teardown(client, space)
     assert (r.status_code, r.json()["error"]) == (409, "deployment_in_progress")
 
 
 def test_teardown_dispatch_failure(client, real_mode, gh):
-    space, _ = start(client)
-    with TestingSession() as db:
-        row = db.get(models.Deployment, db.get(models.AppSpace, space["id"]).latest_deployment_id)
-        row.status, row.run_id = "success", 123
-        db.commit()
+    space = deployed_space(client)
     gh["dispatch_status"] = 403
-    r = client.post(f"/api/app-spaces/{space['id']}/teardown")
+    r = teardown(client, space)
     assert (r.status_code, r.json()["error"]) == (502, "teardown_failed")
-    assert client.get(f"/api/app-spaces/{space['id']}").json()["teardown_requested_at"] is None
+    assert app_of(client, space)["teardown_status"] is None
 
 
 def test_teardown_unknown_app(client):
