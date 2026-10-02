@@ -47,6 +47,7 @@ API 계약은 [백엔드 API 명세 (Notion)](https://app.notion.com/p/3ec8bee9a
 | 내리기 | `POST /api/app-spaces/{id}/teardown` | 🟠 | `destroy.yml` 실행. 실제 워크플로로 배포된 적 있어야 함 (`not_deployed`). 결과는 앱의 `teardown_status` |
 | 워크플로 전용 | `POST /api/deployments/{id}/callback` | 🟠 | 서버 준비 완료(서명 키 연결). 워크플로 실행 후 동작 |
 | | `GET /api/plans/{plan_id}` | 🟠 | 같음 |
+| 모니터링 | `GET /api/app-spaces/{id}/metrics`, `/logs` | 🟠 | 떠 있는 실제 배포의 CPU·메모리·응답 시간, 최근 로그. Workload 키로 CloudWatch 읽기만 |
 | | `POST /api/app-spaces/{id}/teardown/callback` | 🟠 | 내리기 결과 (`success` / `failed` + `reason`). 같은 서명 |
 
 에러는 모두 `{"error": "코드", "message": "설명"}`입니다. 요청·응답 모양은 Swagger와 Notion 명세를 봐 주세요.
@@ -64,6 +65,7 @@ app/
   analysis.py        AI 분석 실행·저장 (백그라운드, running 멈춤 방지)
   deploy.py          배포 진행 기록 (콜백과 가짜 진행이 함께 씀)
   signing.py         워크플로가 부르는 API의 서명 확인
+  monitoring.py      배포된 앱의 지표·로그 조회 (Workload 계정 CloudWatch, 읽기만)
   github.py          GitHub 호출: 배포할 커밋 확인, 배포 레포 워크플로 실행 (workflow_dispatch)
   mock_data.py       샘플 분석 결과 (모델 연결 전)
   ai/                AI 분석 모듈 (강효승 님): 저장소 읽기 repo.py, 모델 호출·검증 analyze.py
@@ -90,6 +92,7 @@ docs/                erd.md, handoff.md
 | `DEPLOY_CALLBACK_SECRET` | 빈 값 | 콜백·값 조회 서명 키. 비어 있으면 모두 401 |
 | `GITHUB_DEPLOY_TOKEN` | 빈 값 | 배포 레포 워크플로 실행 토큰. 비어 있으면 진짜 배포·내리기가 실패로 기록됨 |
 | `DEPLOY_REPO`, `DEPLOY_REF`, `PUBLIC_API_BASE` | `softbank-hackathon-2026/workload-deploy`, `main`, `https://sbh.howon.me/api` | 실행할 배포 레포와 콜백 주소 |
+| `WORKLOAD_AWS_ACCESS_KEY_ID`, `WORKLOAD_AWS_SECRET_ACCESS_KEY` | 빈 값 | 모니터링용 Workload 계정 키 (CloudWatch 읽기만). 서버는 Parameter Store. `AWS_*` 이름을 쓰지 않음 |
 | `AI_MODEL_ID` | 빈 값 | 비어 있으면 분석은 샘플 결과 |
 | `AI_AWS_REGION`, `AI_TIMEOUT_SECONDS`, `AI_SCHEMA_OUTPUT` | `ap-northeast-2`, `60`, `true` | AI 호출 설정 |
 

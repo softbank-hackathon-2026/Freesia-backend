@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import get_settings
-from app.routers import app_spaces, deployments, health, infra_spaces, plans, repositories
+from app.routers import app_spaces, deployments, health, infra_spaces, monitoring, plans, repositories
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +67,7 @@ def create_app() -> FastAPI:
         app_spaces.router,
         deployments.router,
         plans.router,
+        monitoring.router,
     ):
         app.include_router(r, prefix=API_PREFIX)
     return app
