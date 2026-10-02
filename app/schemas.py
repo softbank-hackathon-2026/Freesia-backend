@@ -203,10 +203,16 @@ class AppMetrics(BaseModel):
 
     status: MonitoringStatus
     message: str | None = Field(None, description="status가 ok가 아닐 때 화면에 보일 문장")
-    cpu_percent: float | None = Field(None, examples=[24.1], description="ECS 서비스 CPU 사용률 (%)")
-    memory_percent: float | None = Field(None, examples=[38.0], description="ECS 서비스 메모리 사용률 (%)")
-    response_time_ms: float | None = Field(None, examples=[12.5], description="로드밸런서 → 앱 평균 응답 시간 (ms)")
-    request_count: int | None = Field(None, examples=[42], description="1분 동안 받은 요청 수")
+    compute: Compute | None = Field(None, description="떠 있는 배포의 컴퓨팅. 어떤 칸을 보여 줄지 고를 때 쓴다")
+    cpu_percent: float | None = Field(None, examples=[24.1], description="CPU 사용률 (%). Fargate·EC2")
+    memory_percent: float | None = Field(None, examples=[38.0], description="메모리 사용률 (%). Fargate")
+    response_time_ms: float | None = Field(
+        None, examples=[12.5], description="평균 응답 시간 (ms). Fargate는 로드밸런서 → 앱, Lambda는 처리 시간"
+    )
+    request_count: int | None = Field(None, examples=[42], description="1분 동안 받은 요청 수. Lambda는 호출 수")
+    error_count: int | None = Field(
+        None, examples=[0], description="1분 동안 오류 수. Fargate는 로드밸런서가 받은 5xx 응답, Lambda는 함수 오류"
+    )
     measured_at: UtcDatetime | None = Field(None, description="가장 최근 값의 시각")
 
 

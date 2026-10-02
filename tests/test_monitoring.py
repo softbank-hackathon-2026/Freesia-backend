@@ -54,6 +54,13 @@ class FakeAWS:
         self.streams = streams or {}
         self.missing_group = missing_group
         self.metric_queries = None
+        self.log_group = None
+        self.instances = []  # describe_instances가 돌려줄 실행 중 EC2
+        self.instance_filters = None
+
+    def describe_instances(self, Filters):
+        self.instance_filters = Filters
+        return {"Reservations": [{"Instances": self.instances}]}
 
     def describe_load_balancers(self, Names):
         if not self.lb:
@@ -69,6 +76,7 @@ class FakeAWS:
         ]}
 
     def describe_log_streams(self, logGroupName, **_):
+        self.log_group = logGroupName
         if self.missing_group:
             raise ClientError({"Error": {"Code": "ResourceNotFoundException"}}, "DescribeLogStreams")
         return {"logStreams": [{"logStreamName": name} for name in self.streams]}
@@ -105,11 +113,11 @@ def test_names_follow_template():
 
 
 def test_metrics(client, aws):
-    aws.metric_values = {"cpu": 24.13, "memory": 38.0, "latency": 0.0125, "requests": 42.0}
+    aws.metric_values = {"cpu": 24.13, "memory": 38.0, "latency": 0.0125, "requests": 42.0, "errors": 0.0}
     space = deployed(client)
     assert metrics(client, space) == {
-        "status": "ok", "message": None, "cpu_percent": 24.1, "memory_percent": 38.0,
-        "response_time_ms": 12.5, "request_count": 42, "measured_at": "2026-10-02T10:00:00Z",
+        "status": "ok", "message": None, "compute": "ecs-fargate", "cpu_percent": 24.1, "memory_percent": 38.0,
+        "response_time_ms": 12.5, "request_count": 42, "error_count": 0, "measured_at": "2026-10-02T10:00:00Z",
     }
     dims = {q["Id"]: q["MetricStat"]["Metric"]["Dimensions"] for q in aws.metric_queries}
     assert dims["cpu"] == [
@@ -117,6 +125,9 @@ def test_metrics(client, aws):
         {"Name": "ServiceName", "Value": f"sbh-workload-demo-svc-{space['id']}"},
     ]
     assert dims["latency"] == [{"Name": "LoadBalancer", "Value": f"app/sbh-{space['id']}-alb/abc"}]
+    assert {q["Id"]: q["MetricStat"]["Metric"]["MetricName"] for q in aws.metric_queries}["errors"] == (
+        "HTTPCode_Target_5XX_Count"
+    )
 
 
 def test_metrics_without_load_balancer(client, aws):
@@ -165,8 +176,9 @@ def test_not_deployed(client, aws, status, run_id):
 def test_never_deployed(client, aws):
     space = create_space(client).json()
     assert metrics(client, space) == {
-        "status": "not_deployed", "message": "지금 실제로 배포되어 있지 않은 앱입니다.", "cpu_percent": None,
-        "memory_percent": None, "response_time_ms": None, "request_count": None, "measured_at": None,
+        "status": "not_deployed", "message": "지금 실제로 배포되어 있지 않은 앱입니다.", "compute": None,
+        "cpu_percent": None, "memory_percent": None, "response_time_ms": None, "request_count": None,
+        "error_count": None, "measured_at": None,
     }
 
 
@@ -225,3 +237,60 @@ def test_logs_empty_or_missing_group(client, aws):
 def test_logs_limit_range(client):
     space = create_space(client).json()
     assert client.get(f"/api/app-spaces/{space['id']}/logs", params={"limit": 0}).status_code == 422
+
+
+# Lambda·EC2 (10/2 템플릿 추가). 칸은 Fargate와 같고 없는 값은 null
+
+
+def test_lambda_metrics(client, aws):
+    aws.metric_values = {"duration_ms": 85.34, "requests": 42.0, "errors": 1.0}
+    space = deployed(client, compute="lambda")
+    assert metrics(client, space) == {
+        "status": "ok", "message": None, "compute": "lambda", "cpu_percent": None, "memory_percent": None,
+        "response_time_ms": 85.3, "request_count": 42, "error_count": 1, "measured_at": "2026-10-02T10:00:00Z",
+    }
+    q = {q["Id"]: q["MetricStat"] for q in aws.metric_queries}
+    assert q["requests"]["Metric"] == {
+        "Namespace": "AWS/Lambda", "MetricName": "Invocations",
+        "Dimensions": [{"Name": "FunctionName", "Value": f"sbh-workload-demo-fn-{space['id']}"}],
+    }
+    assert (q["requests"]["Stat"], q["errors"]["Stat"], q["duration_ms"]["Stat"]) == ("Sum", "Sum", "Average")
+
+
+def test_lambda_without_requests_is_waiting(client, aws):
+    got = metrics(client, deployed(client, compute="lambda"))
+    assert (got["status"], got["compute"]) == ("waiting", "lambda")
+    assert "요청이 들어와야" in got["message"]
+
+
+def test_lambda_logs(client, aws):
+    aws.streams = {"2026/10/02/[$LATEST]abc": [event(1_759_399_201_000, "START RequestId: 1")]}
+    space = deployed(client, compute="lambda")
+    got = logs(client, space)
+    assert (got["status"], got["lines"][0]["message"]) == ("ok", "START RequestId: 1")
+    assert aws.log_group == f"/aws/lambda/sbh-workload-demo-fn-{space['id']}"
+
+
+def test_ec2_metrics_use_newest_running_instance(client, aws):
+    aws.instances = [
+        {"InstanceId": "i-old", "LaunchTime": datetime(2026, 10, 2, 9, tzinfo=timezone.utc)},
+        {"InstanceId": "i-new", "LaunchTime": datetime(2026, 10, 2, 10, tzinfo=timezone.utc)},
+    ]
+    aws.metric_values = {"cpu": 3.21}
+    space = deployed(client, compute="ec2")
+    got = metrics(client, space)
+    assert (got["status"], got["compute"], got["cpu_percent"], got["memory_percent"]) == ("ok", "ec2", 3.2, None)
+    assert aws.metric_queries[0]["MetricStat"]["Metric"]["Dimensions"] == [{"Name": "InstanceId", "Value": "i-new"}]
+    assert {"Name": "tag:Name", "Values": [f"sbh-workload-demo-ec2-{space['id']}"]} in aws.instance_filters
+
+
+def test_ec2_without_running_instance_is_waiting(client, aws):
+    got = metrics(client, deployed(client, compute="ec2"))
+    assert got["status"] == "waiting"
+    assert aws.metric_queries is None  # 서버가 없으면 지표를 묻지 않는다
+
+
+def test_ec2_logs_unsupported(client, aws):
+    got = logs(client, deployed(client, compute="ec2"))
+    assert (got["status"], got["lines"]) == ("unsupported", [])
+    assert aws.log_group is None
