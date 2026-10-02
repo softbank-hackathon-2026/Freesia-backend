@@ -18,7 +18,7 @@ def create_space(client, infra_id=PUBLIC, repo_url=REPO, branch="main", register
 def test_infra_list_and_detail(client):
     items = client.get("/api/infra-spaces").json()
     assert [i["id"] for i in items] == [PUBLIC, "sbh-workload-demo-vpc-private01", "sbh-workload-demo-vpc-ha01"]
-    assert set(items[0]) == {"id", "name", "description", "network", "computes", "app_count", "deployable_computes"}  # 내부 값은 숨김
+    assert set(items[0]) == {"id", "name", "description", "network", "status", "computes", "app_count", "deployable_computes"}  # 내부 값은 숨김
     assert client.get(f"/api/infra-spaces/{PUBLIC}").json()["app_count"] == 0
     assert client.get("/api/infra-spaces/nope").json()["error"] == "infra_not_found"
 

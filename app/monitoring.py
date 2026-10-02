@@ -8,12 +8,10 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-import boto3
-from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 from app import models
-from app.config import get_settings
+from app.aws import WorkloadKeyMissing, workload_client
 
 logger = logging.getLogger(__name__)
 
@@ -60,16 +58,10 @@ def _aware(at: datetime) -> datetime:
 
 
 def _client(service: str):
-    s = get_settings()
-    if not (s.workload_aws_access_key_id and s.workload_aws_secret_access_key):
-        raise MonitoringError("모니터링 키가 설정되지 않았습니다.")
-    return boto3.client(
-        service,
-        region_name=s.workload_aws_region,
-        aws_access_key_id=s.workload_aws_access_key_id,
-        aws_secret_access_key=s.workload_aws_secret_access_key,
-        config=Config(connect_timeout=5, read_timeout=10, retries={"total_max_attempts": 2}),
-    )
+    try:
+        return workload_client(service)
+    except WorkloadKeyMissing as e:
+        raise MonitoringError("모니터링 키가 설정되지 않았습니다.") from e
 
 
 _cache: dict[tuple, tuple[float, object]] = {}

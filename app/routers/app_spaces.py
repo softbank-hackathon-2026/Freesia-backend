@@ -25,6 +25,7 @@ from app.schemas import (
     parse_github_url,
 )
 from app.routers.deployments import _raw_body
+from app.routers.infra_spaces import is_deployable
 
 router = APIRouter(prefix="/app-spaces", tags=["app-spaces"])
 
@@ -83,6 +84,10 @@ def check_compute(infra: models.InfraSpace, compute: str) -> None:
         raise HTTPException(
             400, detail={"error": "compute_not_ready", "message": "이 컴퓨팅은 배포 템플릿을 준비 중입니다."}
         )
+    if not is_deployable(infra):
+        raise HTTPException(
+            400, detail={"error": "infra_not_ready", "message": "이 인프라는 아직 배포할 수 없습니다. 인프라를 갱신해 주세요."}
+        )
 
 
 def find_app_space(db: Session, app_space_id: str) -> models.AppSpace:
@@ -99,8 +104,9 @@ def create_app_space(body: AppSpaceCreate, db: Session = Depends(get_db)) -> mod
     명세 6절은 등록된 저장소만 받기로 했지만, 프론트 통합 화면이 아직 저장소 API에 연결되지 않아
     당분간 등록되지 않은 저장소도 받는다(repository_id가 비어 있음). 연결되면 400 repository_not_registered로 막는다.
     """
-    if db.get(models.InfraSpace, body.infra_id) is None:
-        raise HTTPException(400, detail={"error": "infra_not_found", "message": "없는 인프라입니다."})
+    infra = db.get(models.InfraSpace, body.infra_id)
+    if infra is None or infra.status == "unavailable":
+        raise HTTPException(400, detail={"error": "infra_not_found", "message": "없거나 사용할 수 없는 인프라입니다."})
     repo = db.scalar(
         select(models.Repository).where(
             models.Repository.repo_url == body.repo_url, models.Repository.branch == body.branch

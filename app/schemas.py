@@ -57,7 +57,12 @@ class InfraSpace(BaseModel):
     id: str = Field(examples=["sbh-workload-demo-vpc-public01"])
     name: str = Field(examples=["공개 웹 서비스용"])
     description: str
-    network: Literal["public", "private", "ha"]
+    network: Literal["public", "db-isolated", "multi-az", "private", "ha"] = Field(
+        description="public / db-isolated / multi-az. private·ha는 예전 임시 값"
+    )
+    status: Literal["ready", "preparing", "unavailable"] = Field(
+        "ready", description="ready: 배포 가능, preparing: 앱용 퍼블릭 서브넷이 부족함, unavailable: AWS에서 사라짐(목록에 안 나옴)"
+    )
     computes: list[str] = Field(description="이 인프라에 올릴 수 있는 컴퓨팅 (입점 형태). AI가 이 안에서 후보를 고른다")
     app_count: int = Field(description="이 인프라에 올라간 앱 수")
     deployable_computes: list[str] = Field(

@@ -163,7 +163,7 @@ def test_workflow_gets_template_values_and_infra(client, secret):
         "id": plan_id,
         "template": "ecs-fargate/basic",
         "values": PLAN_DEFAULTS,
-        "infra": {"id": PUBLIC, "vpc_id": "vpc-test", "public_subnet_ids": [], "private_subnet_ids": []},
+        "infra": {"id": PUBLIC, "vpc_id": "vpc-test", "public_subnet_ids": ["subnet-a", "subnet-c"], "private_subnet_ids": []},
     }
 
 
