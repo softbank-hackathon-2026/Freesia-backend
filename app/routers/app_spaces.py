@@ -293,6 +293,8 @@ def teardown_callback(
     space.teardown_status = cb.status
     space.teardown_finished_at = now()
     space.teardown_reason = deploy._cut(cb.reason, 1000) if cb.status == "failed" and cb.reason else None
+    if cb.status == "success":
+        deploy.mark_resources_deleted(db, space.id, before=space.teardown_requested_at)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

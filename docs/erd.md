@@ -108,7 +108,7 @@ erDiagram
         int position "받은 순서"
         varchar type "화면에서 묶는 기준"
         varchar action "create / update / replace / delete / no-op"
-        varchar state "pending / in_progress / done / failed"
+        varchar state "pending / in_progress / done / failed / deleted"
         varchar reason
         timestamptz updated_at
     }
@@ -248,7 +248,7 @@ erDiagram
 | `position` | int | | O | 처음 받은 순서. 이 순서로 돌려준다 |
 | `type` | varchar(100) | | O | 예: `aws_lb`. 화면은 이걸로 묶는다 |
 | `action` | varchar(20) | | O | `create` / `update` / `replace` / `delete` / `no-op` |
-| `state` | varchar(20) | | O | `pending` / `in_progress` / `done` / `failed` |
+| `state` | varchar(20) | | O | `pending` / `in_progress` / `done` / `failed`. 내리기에 성공하면 그 앱의 자원은 `deleted` |
 | `reason` | varchar(1000) | | | 실패했을 때만 |
 | `updated_at` | timestamptz | | O | |
 

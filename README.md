@@ -69,7 +69,7 @@ app/
   ai/                AI 분석 모듈 (강효승 님): 저장소 읽기 repo.py, 모델 호출·검증 analyze.py
   models/            SQLAlchemy 모델: repositories, infra_spaces, app_spaces, analyses, plans, deployments
   routers/           API: health, repositories, infra_spaces, app_spaces, deployments, plans
-alembic/versions/    마이그레이션 0001~0005
+alembic/versions/    마이그레이션 0001~0006
 tests/               pytest (SQLite 메모리 DB)
 .github/workflows/   ci.yml (PR·main 검사), deploy.yml (main 머지 시 배포)
 .aws/                task-definition.json (서버 환경변수·비밀값 연결)

@@ -1,7 +1,8 @@
 """배포 진행 기록. 워크플로 콜백과 가짜 진행(시뮬레이션)이 같은 함수로 DB에 남긴다 (ADR-009)."""
 import time
+from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app import db as db_module
@@ -23,7 +24,7 @@ STEP_MESSAGES = {
 FINISHED = ("success", "failed")
 
 # 자원 상태가 되돌아가지 않게 비교할 순서
-RESOURCE_STATE_RANK = {"pending": 0, "in_progress": 1, "done": 2, "failed": 2}
+RESOURCE_STATE_RANK = {"pending": 0, "in_progress": 1, "done": 2, "failed": 2, "deleted": 3}
 
 # 가짜 진행: 워크플로 콜백 5번과 같은 순서 (ADR-009)
 SIMULATED_STEPS = [
@@ -108,6 +109,18 @@ def upsert_resources(db: Session, dep: models.Deployment, resources: list[Callba
         row.type, row.action, row.state = item.type, item.action, item.state
         row.reason = _cut(item.reason, 1000) if item.state == "failed" else None
         row.updated_at = now()
+
+
+def mark_resources_deleted(db: Session, app_space_id: str, before: datetime) -> None:
+    """내리기에 성공하면 그 전에 시작한 배포의 자원을 모두 deleted로 바꾼다. Destroy는 앱의 State에 있는 자원을 전부 지운다."""
+    deployment_ids = select(models.Deployment.id).where(
+        models.Deployment.app_space_id == app_space_id, models.Deployment.created_at < before
+    )
+    db.execute(
+        update(models.DeploymentResource)
+        .where(models.DeploymentResource.deployment_id.in_(deployment_ids))
+        .values(state="deleted", reason=None, updated_at=now())
+    )
 
 
 def simulate(deployment_id: str) -> None:

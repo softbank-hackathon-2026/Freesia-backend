@@ -2,6 +2,7 @@
 import hashlib
 import hmac
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -170,6 +171,44 @@ def test_teardown_success_callback(client, real_mode, gh):
     # 내린 뒤에는 다시 배포하기 전까지 내릴 것이 없다
     r = teardown(client, space)
     assert (r.status_code, r.json()["error"]) == (409, "not_deployed")
+
+
+def add_resource(space_id, address="aws_lb.app"):
+    """마지막 배포에 워크플로가 보낸 것 같은 완료 자원을 하나 남긴다."""
+    with TestingSession() as db:
+        dep_id = db.get(models.AppSpace, space_id).latest_deployment_id
+        db.add(models.DeploymentResource(
+            deployment_id=dep_id, address=address, position=0, type="aws_lb", action="create", state="done",
+            updated_at=datetime.now(timezone.utc),
+        ))
+        db.commit()
+        return dep_id
+
+
+def resource_states(client, dep_id):
+    return [r["state"] for r in client.get(f"/api/deployments/{dep_id}/resources").json()]
+
+
+def test_teardown_success_marks_resources_deleted(client, real_mode, gh):
+    space = deployed_space(client)
+    old = add_resource(space["id"])
+    teardown(client, space)
+    assert resource_states(client, old) == ["done"]  # 끝나기 전에는 그대로
+    teardown_callback(client, space, {"status": "success"})
+    assert resource_states(client, old) == ["deleted"]
+    # 다시 배포하면 새 배포의 트리는 새로 채워지고, 내린 배포의 기록은 deleted로 남는다
+    client.post(f"/api/app-spaces/{space['id']}/deployments", json={"compute": "ecs-fargate"})
+    mark_deployed(space["id"])
+    new = add_resource(space["id"])
+    assert (resource_states(client, new), resource_states(client, old)) == (["done"], ["deleted"])
+
+
+def test_failed_teardown_keeps_resources(client, real_mode, gh):
+    space = deployed_space(client)
+    dep_id = add_resource(space["id"])
+    teardown(client, space)
+    teardown_callback(client, space, {"status": "failed", "reason": "자원을 지우는 중 실패했습니다."})
+    assert resource_states(client, dep_id) == ["done"]
 
 
 def test_teardown_failed_callback_can_retry(client, real_mode, gh):

@@ -45,6 +45,8 @@ AnalysisStatus = Literal["pending", "running", "done", "failed"]
 TeardownStatus = Literal["requested", "success", "failed"]
 CandidateState = Literal["selected", "alternative", "unsuitable"]
 ResourceState = Literal["pending", "in_progress", "done", "failed"]
+# 트리에 보이는 상태. 내리기에 성공하면 그 앱의 자원은 모두 deleted가 된다 (워크플로는 보내지 않음)
+ResourceViewState = Literal["pending", "in_progress", "done", "failed", "deleted"]
 
 
 class InfraSpace(BaseModel):
@@ -257,6 +259,6 @@ class DeploymentResource(BaseModel):
     address: str
     type: str
     action: str
-    state: ResourceState
+    state: ResourceViewState
     reason: str | None = None
     updated_at: UtcDatetime
