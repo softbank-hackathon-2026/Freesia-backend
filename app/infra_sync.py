@@ -2,6 +2,7 @@
 
 인프라 관리자가 미리 만든 인프라를 플랫폼이 읽기만 한다. DB가 비어 있어도 갱신 한 번이면 배포에 쓸
 VPC·서브넷까지 들어간다. AWS에서 사라진 인프라는 지우지 않고 unavailable로 숨긴다 (그 인프라를 쓰는 앱이 있다).
+목록을 볼 때마다 갱신한다(refresh). AWS를 한 번 읽는 데 1초 안팎이라 화면이 기다릴 만하다 (10/2 서버에서 측정).
 """
 import logging
 import re
@@ -21,7 +22,8 @@ logger = logging.getLogger(__name__)
 
 TAG = "InfraId"
 ID_PATTERN = re.compile(r"^[a-z0-9-]{1,64}$")  # ADR-005 ID 규칙
-COOLDOWN_SECONDS = 30  # 버튼을 연달아 눌러도 AWS를 한 번만 부른다
+COOLDOWN_SECONDS = 5  # 한 화면이 거의 동시에 여러 번 불러도 AWS는 한 번만 읽는다
+RETRY_AFTER_FAILURE_SECONDS = 60  # AWS가 안 되면 목록 조회마다 기다리지 않게 잠시 쉰다
 NETWORKS = {"public", "db-isolated", "multi-az"}
 DEFAULT_COMPUTES = ["ecs-fargate", "lambda", "ec2"]
 
@@ -45,18 +47,37 @@ class Found:
     private_subnet_ids: list[str] = field(default_factory=list)
 
 
-_last_run = 0.0
+# 서버(Task)마다 따로 기억한다. Task가 2개라 같은 순간에 AWS를 두 번 읽을 수는 있다 (읽기만 해서 괜찮다)
+_next_run = 0.0  # 이 시각 전에는 AWS를 다시 읽지 않는다
+_last_error: "SyncError | None" = None
 
 
 def sync(db: Session) -> None:
-    """AWS를 읽어 DB를 맞춘다. 30초 안에 다시 부르면 AWS를 부르지 않는다. commit까지 한다."""
-    global _last_run
-    if time.monotonic() - _last_run < COOLDOWN_SECONDS:
+    """AWS를 읽어 DB를 맞춘다. commit까지 한다.
+
+    성공 뒤 5초 안에 다시 부르면 아무것도 하지 않는다. 실패 뒤 60초 안에 다시 부르면 AWS를 부르지 않고 같은 실패를 낸다.
+    """
+    global _next_run, _last_error
+    if time.monotonic() < _next_run:
+        if _last_error is not None:
+            raise _last_error
         return
-    found = discover()
+    try:
+        found = discover()
+    except SyncError as e:
+        _last_error, _next_run = e, time.monotonic() + RETRY_AFTER_FAILURE_SECONDS
+        raise
     apply(db, found)
     db.commit()
-    _last_run = time.monotonic()
+    _last_error, _next_run = None, time.monotonic() + COOLDOWN_SECONDS
+
+
+def refresh(db: Session) -> None:
+    """목록을 볼 때 부른다. AWS를 읽지 못해도 DB에 있는 목록을 그대로 보여 준다."""
+    try:
+        sync(db)
+    except SyncError:
+        db.rollback()
 
 
 def discover() -> list[Found]:
