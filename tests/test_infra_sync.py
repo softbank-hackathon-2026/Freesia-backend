@@ -99,7 +99,7 @@ def test_sync_fills_deployable_infra(client, aws):
     assert set(got) == {PUBLIC, DB_ISOLATED, MULTI_AZ}
     assert got[DB_ISOLATED]["name"] == "DB 격리형 서비스용"
     assert (got[MULTI_AZ]["network"], got[MULTI_AZ]["status"]) == ("multi-az", "ready")
-    assert got[MULTI_AZ]["deployable_computes"] == ["ecs-fargate"]
+    assert got[MULTI_AZ]["deployable_computes"] == ["ecs-fargate", "ec2"]  # Multi-AZ 표는 Fargate·EC2
     with TestingSession() as db:
         ha = db.get(models.InfraSpace, MULTI_AZ)
         assert ha.vpc_id == "vpc-ha" and ha.aws_account_id == "921810471078"

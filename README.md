@@ -40,7 +40,7 @@ API 계약은 [백엔드 API 명세 (Notion)](https://app.notion.com/p/3ec8bee9a
 | 앱 | `GET` `POST /api/app-spaces`, `GET` `DELETE /api/app-spaces/{id}` | 🟢 | 당분간 등록 안 된 저장소도 받음. 삭제는 목록에서 숨기기, AWS에 떠 있으면 먼저 내려야 함 (`app_still_deployed`) |
 | 인프라 | `GET /api/infra-spaces`, `/api/infra-spaces/{id}`, `POST /api/infra-spaces/sync` | 🟢 | 목록을 볼 때마다 Workload 계정에서 `InfraId` 태그가 붙은 VPC·서브넷을 다시 읽어 DB를 채움(약 1초, AWS를 못 읽으면 저장된 목록). `sync`는 같은 갱신을 하고 실패를 `502`로 알림. `deployable_computes`로 배포 가능 여부 표시 |
 | AI 분석 | `POST` `GET /api/app-spaces/{id}/analysis` | 🟡 | `AI_MODEL_ID`가 없으면 샘플 결과 |
-| 구성안 | `POST /api/app-spaces/{id}/plans`, `GET ...?compute=` | 🟡 | 지금 값은 템플릿 기본값 |
+| 구성안 | `POST /api/app-spaces/{id}/plans`, `GET ...?compute=` | 🟡 | 템플릿 `ecs-fargate/basic`, `lambda/basic`, `ec2/basic`. AI가 채운 값(Fargate만), 없으면 템플릿 기본값 |
 | 배포 | `POST /api/app-spaces/{id}/deployments` | 🟡 | `DEPLOY_SIMULATE=true`라 가짜 진행(약 8초). `false`면 `deploy.yml` 실행 |
 | | `GET /api/deployments/{id}`, `/events` (SSE) | 🟡 | 가짜 진행 결과 |
 | | `GET /api/deployments/{id}/resources` | 🟠 | 콜백이 와야 채워짐 |
