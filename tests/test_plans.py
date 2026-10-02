@@ -182,3 +182,28 @@ def test_workflow_rejected_without_server_secret(client):
     space = create_space(client).json()
     plan_id = make_plan(client, space).json()["plans"][0]["id"]
     assert signed_get(client, plan_id, secret="anything").status_code == 401
+
+
+# AI가 분석 때 채운 템플릿 값 (ADR-012)
+
+AI_VALUES = {"container_port": 3000, "cpu": 256, "memory": 512, "health_check_path": "/health"}
+
+
+@pytest.mark.parametrize(
+    "template_values,expected",
+    [
+        ({"ecs-fargate": AI_VALUES}, AI_VALUES),
+        ({"ecs-fargate": {**AI_VALUES, "memory": 4096}}, DEFAULTS),  # 검사 실패면 기본값 (분석 때 이미 걸러져 보통은 오지 않음)
+        ({}, DEFAULTS),  # 템플릿 값이 없는 옛 분석
+    ],
+)
+def test_plan_uses_ai_template_values(client, monkeypatch, template_values, expected):
+    from app import analysis as analysis_module
+    from tests.test_analysis import done_result
+
+    monkeypatch.setattr(get_settings(), "ai_model_id", "test-model")
+    result = done_result().model_copy(update={"template_values": template_values})
+    monkeypatch.setattr(analysis_module, "run_analysis", lambda *a: (result, "a" * 40))
+    space = create_space(client).json()
+    client.post(f"/api/app-spaces/{space['id']}/analysis")
+    assert make_plan(client, space).json()["plans"][0]["values"] == expected

@@ -254,16 +254,22 @@ def create_plan(app_space_id: str, body: PlanCreate, db: Session = Depends(get_d
 
 
 def _new_plan(db: Session, space: models.AppSpace, compute: str) -> models.Plan:
-    """템플릿 기본값으로 구성안을 만든다. AI가 값을 채우게 되면 fill_values에 AI 값을 넘긴다. commit은 부르는 쪽."""
+    """AI가 분석 때 채운 템플릿 값으로 구성안을 만든다. 분석이 없거나 값이 틀리면 템플릿 기본값. commit은 부르는 쪽."""
     template = catalog.TEMPLATES[compute]
     latest = analysis.latest(db, space.id)
+    done = latest if latest is not None and latest.status == "done" else None
+    ai_values = ((done.result or {}).get("template_values") or {}).get(compute) if done else None
+    try:
+        values = catalog.fill_values(compute, ai_values)
+    except ValueError:
+        values = catalog.fill_values(compute)
     plan = models.Plan(
         id=new_id("plan"),
         app_space_id=space.id,
-        analysis_id=latest.id if latest is not None and latest.status == "done" else None,
+        analysis_id=done.id if done else None,
         compute=compute,
         template=template.name,
-        values=catalog.fill_values(compute),
+        values=values,
         name=template.plan_name,
         summary=template.summary,
         pros=template.pros,
