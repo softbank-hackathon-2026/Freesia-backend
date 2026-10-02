@@ -41,6 +41,8 @@ DeploymentStatus = Literal["pending", "building", "deploying", "success", "faile
 DeploymentStep = Literal["queued", "prepare", "build", "deploy", "verify", "done"]
 Compute = Literal["ecs-fargate", "lambda", "ec2"]
 AnalysisStatus = Literal["pending", "running", "done", "failed"]
+# 모니터링 상태 (API 명세 12절). not_deployed: 지금 AWS에 떠 있는 실제 배포가 없음, waiting: 떠 있지만 아직 값이 없음
+MonitoringStatus = Literal["ok", "waiting", "not_deployed", "unsupported", "error"]
 # 내리기 상태 (API 명세 9-5절). requested 뒤에 Destroy 워크플로 콜백으로 success·failed가 된다
 TeardownStatus = Literal["requested", "success", "failed"]
 CandidateState = Literal["selected", "alternative", "unsuitable"]
@@ -189,6 +191,31 @@ class Teardown(BaseModel):
     app_space_id: str
     status: Literal["requested"] = "requested"
     requested_at: UtcDatetime
+
+
+class AppMetrics(BaseModel):
+    """앱 지표 (API 명세 12절). 최근 1분 값. 값이 없으면 null이고, 0이나 정상으로 대신 채우지 않는다."""
+
+    status: MonitoringStatus
+    message: str | None = Field(None, description="status가 ok가 아닐 때 화면에 보일 문장")
+    cpu_percent: float | None = Field(None, examples=[24.1], description="ECS 서비스 CPU 사용률 (%)")
+    memory_percent: float | None = Field(None, examples=[38.0], description="ECS 서비스 메모리 사용률 (%)")
+    response_time_ms: float | None = Field(None, examples=[12.5], description="로드밸런서 → 앱 평균 응답 시간 (ms)")
+    request_count: int | None = Field(None, examples=[42], description="1분 동안 받은 요청 수")
+    measured_at: UtcDatetime | None = Field(None, description="가장 최근 값의 시각")
+
+
+class LogLine(BaseModel):
+    at: UtcDatetime
+    message: str
+
+
+class AppLogs(BaseModel):
+    """앱 실행 로그 (API 명세 12절). 최근 1시간에서 마지막 limit줄, 오래된 것부터."""
+
+    status: MonitoringStatus
+    message: str | None = None
+    lines: list[LogLine] = []
 
 
 class TeardownCallback(BaseModel):
