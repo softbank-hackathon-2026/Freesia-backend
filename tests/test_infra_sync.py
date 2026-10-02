@@ -78,11 +78,6 @@ class FakeEC2:
         return Pager()
 
 
-@pytest.fixture(autouse=True)
-def _no_cooldown(monkeypatch):
-    monkeypatch.setattr(infra_sync, "_last_run", 0.0)
-
-
 @pytest.fixture
 def aws(monkeypatch):
     monkeypatch.setattr(get_settings(), "workload_aws_access_key_id", "test-id")
@@ -119,8 +114,7 @@ def test_sync_into_empty_db_then_deploy(client, aws):
     with TestingSession() as db:
         db.query(models.InfraSpace).delete()
         db.commit()
-    assert client.get("/api/infra-spaces").json() == []
-    assert len(sync(client).json()) == 3
+    assert len(client.get("/api/infra-spaces").json()) == 3  # 목록 조회만으로 채워진다
     space = create_space(client, infra_id=DB_ISOLATED).json()
     r = client.post(f"/api/app-spaces/{space['id']}/deployments", json={"compute": "ecs-fargate"})
     assert r.status_code == 201
@@ -192,4 +186,41 @@ def test_sync_aws_failure_keeps_db(client, aws, monkeypatch):
         raise ClientError({"Error": {"Code": "UnauthorizedOperation"}}, "DescribeVpcs")
     monkeypatch.setattr(aws, "get_paginator", broken)
     assert sync(client).status_code == 502
+    assert len(client.get("/api/infra-spaces").json()) == 3
+
+
+# 목록을 볼 때마다 갱신 (새로고침 버튼이 GET만 불러도 최신)
+
+
+def test_list_reads_aws_every_time(client, aws, monkeypatch):
+    got = {i["id"]: i for i in client.get("/api/infra-spaces").json()}
+    assert set(got) == {PUBLIC, DB_ISOLATED, MULTI_AZ}  # 갱신 버튼 없이도 AWS 값
+    aws.vpcs["vpc-pub"]["tags"] = {"InfraId": PUBLIC, "DisplayName": "라인 서비스용"}
+    monkeypatch.setattr(infra_sync, "_next_run", 0.0)  # 5초가 지났다고 친다
+    got = {i["id"]: i for i in client.get("/api/infra-spaces").json()}
+    assert got[PUBLIC]["name"] == "라인 서비스용"
+
+
+def test_list_burst_reads_aws_once(client, aws):
+    client.get("/api/infra-spaces")
+    calls = aws.calls
+    client.get("/api/infra-spaces")
+    assert aws.calls == calls
+
+
+def test_list_keeps_db_when_aws_fails(client, aws, monkeypatch):
+    def broken(method):
+        aws.calls += 1
+        raise ClientError({"Error": {"Code": "UnauthorizedOperation"}}, "DescribeVpcs")
+    monkeypatch.setattr(aws, "get_paginator", broken)
+    r = client.get("/api/infra-spaces")
+    assert r.status_code == 200 and len(r.json()) == 3  # 예전 목록 그대로
+    calls = aws.calls
+    assert client.get("/api/infra-spaces").status_code == 200
+    assert aws.calls == calls  # 실패 뒤에는 잠시 AWS를 다시 부르지 않는다
+    # 직접 갱신은 실패를 그대로 알려 준다
+    assert (sync(client).status_code, aws.calls) == (502, calls)
+
+
+def test_list_without_key_keeps_db(client):
     assert len(client.get("/api/infra-spaces").json()) == 3
