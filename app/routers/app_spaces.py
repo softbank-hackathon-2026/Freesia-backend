@@ -41,16 +41,25 @@ def _in_progress(db: Session, space: models.AppSpace) -> models.Deployment | Non
     )
 
 
-def _real_deployments(db: Session, space: models.AppSpace, success_only: bool = False) -> bool:
+def _real_deployments(db: Session, space: models.AppSpace, left_resources: bool = False) -> bool:
     """마지막으로 내린 뒤에 실제 워크플로로 배포한 적이 있는지.
 
     run_id는 진짜 워크플로가 첫 콜백으로 보낸다. 가짜 진행은 채우지 않는다.
+    left_resources면 AWS에 자원이 남았을 배포만 센다: 성공했거나, 실패했어도 Terraform이 자원을
+    만들기 시작한 배포(트리에 pending이 아닌 자원이 있음). 빌드나 변수 준비에서 멈춘 배포는 지울 것도 없고
+    내리기도 실패해서, 이것까지 막으면 영영 삭제할 수 없다.
     """
     query = select(models.Deployment.id).where(
         models.Deployment.app_space_id == space.id, models.Deployment.run_id.is_not(None)
     )
-    if success_only:
-        query = query.where(models.Deployment.status == "success")
+    if left_resources:
+        touched = (
+            select(models.DeploymentResource.deployment_id)
+            .where(models.DeploymentResource.state.in_(["in_progress", "done", "failed"]))
+        )
+        query = query.where(
+            (models.Deployment.status == "success") | models.Deployment.id.in_(touched)
+        )
     if space.teardown_status == "success":
         query = query.where(models.Deployment.created_at > space.teardown_requested_at)
     return db.scalar(query.limit(1)) is not None
@@ -140,8 +149,7 @@ def delete_app_space(app_space_id: str, db: Session = Depends(get_db)) -> Respon
         )
     if _tearing_down(space):
         raise HTTPException(409, detail=TEARDOWN_IN_PROGRESS)
-    # 성공한 실제 배포만 센다. 빌드에서 멈춘 배포는 지울 자원이 없고, 내리기도 실패해서 영영 못 지우게 된다
-    if _real_deployments(db, space, success_only=True):
+    if _real_deployments(db, space, left_resources=True):
         raise HTTPException(
             409, detail={"error": "app_still_deployed", "message": "AWS에 배포되어 있는 앱입니다. 먼저 내려 주세요."}
         )

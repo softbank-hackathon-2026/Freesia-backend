@@ -337,10 +337,21 @@ def test_cannot_delete_after_failed_teardown(client, real_mode, gh):
     assert delete(client, space).json()["error"] == "app_still_deployed"
 
 
-def test_delete_app_whose_real_deploy_failed(client, real_mode, gh):
+def test_delete_app_whose_real_deploy_failed_before_terraform(client, real_mode, gh):
     space, _ = start(client)
-    mark_deployed(space["id"], status="failed")  # 워크플로는 돌았지만 실패 (빌드 등)
+    mark_deployed(space["id"], status="failed")  # 워크플로는 돌았지만 빌드·변수 준비에서 실패
+    add_resource(space["id"])  # 자원 목록만 받고(pending) 만들지는 않음
+    with TestingSession() as db:
+        db.query(models.DeploymentResource).update({"state": "pending"})
+        db.commit()
     assert delete(client, space).status_code == 204
+
+
+def test_cannot_delete_app_whose_deploy_failed_midway(client, real_mode, gh):
+    space, _ = start(client)
+    mark_deployed(space["id"], status="failed")  # Terraform이 자원을 만들다가 실패
+    add_resource(space["id"])  # done 자원이 남음
+    assert delete(client, space).json()["error"] == "app_still_deployed"
 
 
 def test_cannot_delete_while_deploying(client, real_mode, gh):
