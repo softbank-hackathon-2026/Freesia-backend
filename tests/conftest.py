@@ -6,13 +6,14 @@ from datetime import datetime, timedelta, timezone
 os.environ["DATABASE_URL"] = "sqlite://"
 os.environ["APP_VERSION"] = "test-sha"
 
+import httpx  # noqa: E402
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import create_engine  # noqa: E402
 from sqlalchemy.orm import sessionmaker  # noqa: E402
 from sqlalchemy.pool import StaticPool  # noqa: E402
 
-from app import deploy, models  # noqa: E402
+from app import deploy, github, models  # noqa: E402
 from app.db import Base, SessionLocal, get_db  # noqa: E402
 from app.main import app  # noqa: E402
 from app.routers import deployments  # noqa: E402
@@ -55,6 +56,27 @@ def _db(monkeypatch):
     monkeypatch.setattr(deployments, "STREAM_MAX_SECONDS", 0.5)
     yield
     Base.metadata.drop_all(engine)
+
+
+FAKE_SHA = "c" * 40
+
+
+@pytest.fixture(autouse=True)
+def gh(monkeypatch):
+    """가짜 GitHub. 테스트가 진짜 GitHub을 부르지 않게 한다.
+    보낸 요청은 requests에 쌓이고, commit_status·dispatch_status로 응답 코드를 바꾼다."""
+    state = {"requests": [], "commit_status": 200, "dispatch_status": 204}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        state["requests"].append(req)
+        if "/commits/" in req.url.path:
+            return httpx.Response(state["commit_status"], text=FAKE_SHA)
+        if state["dispatch_status"] == 204:
+            return httpx.Response(204)
+        return httpx.Response(state["dispatch_status"], json={"message": "fake"})
+
+    monkeypatch.setattr(github, "TRANSPORT", httpx.MockTransport(handler))
+    return state
 
 
 @pytest.fixture

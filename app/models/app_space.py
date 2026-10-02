@@ -19,4 +19,9 @@ class AppSpace(Base):
     branch: Mapped[str] = mapped_column(String(255))
     infra_id: Mapped[str] = mapped_column(String(64), ForeignKey("infra_spaces.id"))
     latest_deployment_id: Mapped[str | None] = mapped_column(String(32))
+    # 내리기 (배포 레포 Destroy 워크플로). 상태는 requested → success / failed, 결과는 내리기 콜백(API 명세 9-5)으로 온다
+    teardown_status: Mapped[str | None] = mapped_column(String(20))
+    teardown_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    teardown_finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    teardown_reason: Mapped[str | None] = mapped_column(String(1000))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

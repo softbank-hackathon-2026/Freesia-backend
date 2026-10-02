@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     deploy_callback_secret: str = ""
     # true면 워크플로를 부르지 않고 가짜 진행을 DB에 기록한다 (배포 레포 연결 전까지, API 명세 9-1)
     deploy_simulate: bool = True
+    # 배포 레포 워크플로를 실행할 GitHub 토큰 (workflow_dispatch). 서버는 Parameter Store
+    # /sbh/platform/demo/backend/GITHUB_DEPLOY_TOKEN 값이 주입된다. 응답·로그에 남기지 않는다 (규칙 7)
+    github_deploy_token: str = ""
+    deploy_repo: str = "softbank-hackathon-2026/workload-deploy"
+    deploy_ref: str = "main"
+    # 콜백 주소 앞부분. 배포 레포 deploy.yml의 CALLBACK_BASE와 같아야 워크플로가 받아들인다
+    public_api_base: str = "https://sbh.howon.me/api"
 
     # AI 분석 (Bedrock, ADR-006·007). 모델·리전은 값만 바꿔 고른다. 자격증명은 두지 않는다 (규칙 9: 서버는 ECS 작업 역할)
     ai_model_id: str = ""
