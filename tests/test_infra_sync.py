@@ -41,7 +41,8 @@ AWS = {
                    table("rt-main2", False, main=True)],
     },
     "vpc-ha": {
-        "tags": {"InfraId": MULTI_AZ},
+        "tags": {"InfraId": MULTI_AZ, "DisplayName": "고가용성 서비스용", "Network": "multi-az",
+                 "Computes": "ecs-fargate ec2"},
         "subnets": [
             subnet("sn-nat-a", "a", "nat_a"), subnet("sn-web-a", "a", "web_a"),
             subnet("sn-nat-c", "c", "nat_c"), subnet("sn-web-c", "c", "web_c"),
@@ -102,9 +103,15 @@ def test_sync_fills_deployable_infra(client, aws):
     got = {i["id"]: i for i in r.json()}
     # 예전 임시 인프라(private01, ha01)는 AWS에 없어서 빠진다
     assert set(got) == {PUBLIC, DB_ISOLATED, MULTI_AZ}
-    assert got[DB_ISOLATED]["name"] == "DB 격리형 서비스용"
-    assert (got[MULTI_AZ]["network"], got[MULTI_AZ]["status"]) == ("multi-az", "ready")
-    assert got[MULTI_AZ]["deployable_computes"] == ["ecs-fargate"]
+    # 태그가 있으면 태그대로
+    assert (got[MULTI_AZ]["name"], got[MULTI_AZ]["network"], got[MULTI_AZ]["status"]) == (
+        "고가용성 서비스용", "multi-az", "ready"
+    )
+    assert (got[MULTI_AZ]["computes"], got[MULTI_AZ]["deployable_computes"]) == (["ecs-fargate", "ec2"], ["ecs-fargate"])
+    # 태그가 없으면 이름은 InfraId, 설명은 빈칸, 컴퓨팅은 전부, 네트워크는 서브넷으로 짐작
+    assert (got[DB_ISOLATED]["name"], got[DB_ISOLATED]["description"]) == (DB_ISOLATED, "")
+    assert (got[DB_ISOLATED]["network"], got[PUBLIC]["network"]) == ("db-isolated", "public")
+    assert got[DB_ISOLATED]["computes"] == ["ecs-fargate", "lambda", "ec2"]
     with TestingSession() as db:
         ha = db.get(models.InfraSpace, MULTI_AZ)
         assert ha.vpc_id == "vpc-ha" and ha.aws_account_id == "921810471078"
@@ -150,13 +157,13 @@ def test_one_public_subnet_is_preparing(client, aws):
     assert (got[PUBLIC]["status"], got[PUBLIC]["deployable_computes"]) == ("preparing", [])
 
 
-def test_tags_override_known_names(client, aws):
+def test_display_tags(client, aws):
     aws.vpcs["vpc-pub"]["tags"] = {"InfraId": PUBLIC, "DisplayName": "라인 서비스용", "Computes": "ecs-fargate lambda"}
     got = {i["id"]: i for i in sync(client).json()}
     assert (got[PUBLIC]["name"], got[PUBLIC]["computes"]) == ("라인 서비스용", ["ecs-fargate", "lambda"])
 
 
-def test_unknown_infra_uses_its_id(client, aws):
+def test_new_infra_without_tags_uses_its_id(client, aws):
     aws.vpcs["vpc-new"] = {"tags": {"InfraId": "sbh-new01"}, "subnets": AWS["vpc-pub"]["subnets"],
                            "tables": AWS["vpc-pub"]["tables"]}
     got = {i["id"]: i for i in sync(client).json()}
