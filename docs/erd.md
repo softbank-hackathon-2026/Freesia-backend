@@ -51,6 +51,7 @@ erDiagram
         timestamptz teardown_requested_at
         timestamptz teardown_finished_at
         varchar teardown_reason
+        timestamptz deleted_at
         timestamptz created_at
     }
 
@@ -176,6 +177,7 @@ erDiagram
 | `teardown_requested_at` | timestamptz | | | 내리기를 요청한 시각. 30분 안에 콜백이 없으면 다시 요청할 수 있다 |
 | `teardown_finished_at` | timestamptz | | | 내리기 콜백을 받은 시각 |
 | `teardown_reason` | varchar(1000) | | | 내리기 실패 이유 |
+| `deleted_at` | timestamptz | | | 앱 삭제(목록에서 숨기기) 시각. 있으면 목록·상세·`app_count`에서 빠진다. 기록은 남긴다 (마이그레이션 0007) |
 | `created_at` | timestamptz | | O | |
 
 ### analyses (AI 견적) · 구현됨

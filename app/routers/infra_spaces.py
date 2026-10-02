@@ -26,7 +26,11 @@ def _to_schema(infra: models.InfraSpace, app_count: int) -> InfraSpace:
 
 
 def _app_counts(db: Session) -> dict[str, int]:
-    stmt = select(models.AppSpace.infra_id, func.count()).group_by(models.AppSpace.infra_id)
+    stmt = (
+        select(models.AppSpace.infra_id, func.count())
+        .where(models.AppSpace.deleted_at.is_(None))
+        .group_by(models.AppSpace.infra_id)
+    )
     return dict(db.execute(stmt).all())
 
 
