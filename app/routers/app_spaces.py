@@ -404,6 +404,10 @@ def _start_workflow(db: Session, space: models.AppSpace, dep: models.Deployment)
         db.rollback()
         deploy.record_event(db, dep, "failed", dep.step, reason=str(e))
         db.commit()
+    except HTTPException as e:  # 구성안을 못 만듦(vm_values_missing). 배포가 pending으로 남아 앱이 막히지 않게 실패로 닫는다
+        db.rollback()
+        deploy.record_event(db, dep, "failed", dep.step, reason=e.detail["message"])
+        db.commit()
 
 
 def _prefill_resources(db: Session, dep: models.Deployment) -> None:
