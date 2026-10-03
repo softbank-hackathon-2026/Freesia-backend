@@ -54,10 +54,11 @@ AWS = {
 
 
 class FakeEC2:
-    """ec2·elbv2·acm 대신. workload_client가 서비스와 상관없이 이 객체를 돌려준다."""
+    """ec2·elbv2·acm 대신. account_client가 계정마다 서비스와 상관없이 이 객체를 돌려준다."""
 
-    def __init__(self, vpcs):
+    def __init__(self, vpcs, owner="921810471078"):
         self.vpcs = vpcs
+        self.owner = owner
         self.calls = 0
         self.lbs = []  # describe_load_balancers 결과
         self.lb_tags = {}  # ARN → 태그
@@ -87,7 +88,7 @@ class FakeEC2:
                 vpc_id = next((f["Values"][0] for f in Filters if f["Name"] == "vpc-id"), None)
                 if method == "describe_vpcs":
                     return [{"Vpcs": [
-                        {"VpcId": vid, "OwnerId": "921810471078",
+                        {"VpcId": vid, "OwnerId": fake.owner,
                          "Tags": [{"Key": k, "Value": v} for k, v in vpc["tags"].items()]}
                         for vid, vpc in fake.vpcs.items()
                     ]}]
@@ -103,7 +104,8 @@ def aws(monkeypatch):
     monkeypatch.setattr(get_settings(), "workload_aws_access_key_id", "test-id")
     monkeypatch.setattr(get_settings(), "workload_aws_secret_access_key", "test-secret")
     fake = FakeEC2({k: dict(v) for k, v in AWS.items()})
-    monkeypatch.setattr(infra_sync, "workload_client", lambda service: fake)
+    fake.accounts = {"workload": fake}  # sandbox 테스트가 Sandbox 가짜를 더 넣는다
+    monkeypatch.setattr(infra_sync, "account_client", lambda account, service: fake.accounts[account])
     return fake
 
 
@@ -291,3 +293,71 @@ def test_no_shared_alb_without_https_listener(client, aws):
     sync(client)
     with TestingSession() as db:
         assert db.get(models.InfraSpace, MULTI_AZ).alb_listener_arn is None
+
+
+# Sandbox 계정 (키가 있을 때만 읽는다)
+
+SANDBOX_INFRA = "sbh-sandbox-vpc-default01"
+
+
+@pytest.fixture
+def sandbox(monkeypatch, aws):
+    monkeypatch.setattr(get_settings(), "sandbox_aws_access_key_id", "sb-id")
+    monkeypatch.setattr(get_settings(), "sandbox_aws_secret_access_key", "sb-secret")
+    fake = FakeEC2({"vpc-sb": {**AWS["vpc-pub"], "tags": {"InfraId": SANDBOX_INFRA}}}, owner="635738234799")
+    aws.accounts["sandbox"] = fake
+    return fake
+
+
+def infra_row(infra_id):
+    with TestingSession() as db:
+        return db.get(models.InfraSpace, infra_id)
+
+
+def test_sandbox_infra_is_listed_with_its_account(client, sandbox):
+    got = {i["id"]: i for i in sync(client).json()}
+    assert set(got) == {PUBLIC, DB_ISOLATED, MULTI_AZ, SANDBOX_INFRA}
+    assert got[SANDBOX_INFRA]["status"] == "ready"
+    row = infra_row(SANDBOX_INFRA)
+    # 구성안이 이 계정 ID를 넘겨서 배포 레포가 Sandbox로 배포한다
+    assert (row.aws_account_id, row.region, row.vpc_id) == ("635738234799", "ap-northeast-2", "vpc-sb")
+    assert infra_row(PUBLIC).aws_account_id == "921810471078"
+
+
+def test_sandbox_not_read_without_key(client, aws):
+    fake = FakeEC2({"vpc-sb": {**AWS["vpc-pub"], "tags": {"InfraId": SANDBOX_INFRA}}}, owner="635738234799")
+    aws.accounts["sandbox"] = fake
+    assert SANDBOX_INFRA not in {i["id"] for i in sync(client).json()}
+    assert fake.calls == 0
+
+
+def test_sandbox_failure_keeps_sandbox_and_updates_workload(client, aws, sandbox, monkeypatch):
+    sync(client)
+
+    def broken(method):
+        raise ClientError({"Error": {"Code": "UnauthorizedOperation"}}, "DescribeVpcs")
+    monkeypatch.setattr(sandbox, "get_paginator", broken)
+    aws.vpcs["vpc-pub"]["tags"] = {"InfraId": PUBLIC, "DisplayName": "새 이름"}
+    monkeypatch.setattr(infra_sync, "_next_run", 0.0)
+    got = {i["id"]: i for i in sync(client).json()}
+    assert got[PUBLIC]["name"] == "새 이름"  # Workload는 갱신
+    assert got[SANDBOX_INFRA]["status"] == "ready"  # 못 읽은 Sandbox는 그대로
+
+
+def test_workload_failure_keeps_everything(client, aws, sandbox, monkeypatch):
+    sync(client)
+
+    def broken(method):
+        raise ClientError({"Error": {"Code": "UnauthorizedOperation"}}, "DescribeVpcs")
+    monkeypatch.setattr(aws, "get_paginator", broken)
+    monkeypatch.setattr(infra_sync, "_next_run", 0.0)
+    assert sync(client).status_code == 502
+    assert len(client.get("/api/infra-spaces").json()) == 4
+
+
+def test_vanished_sandbox_infra_is_hidden(client, aws, sandbox):
+    sync(client)
+    sandbox.vpcs.clear()
+    infra_sync._next_run = 0.0
+    assert SANDBOX_INFRA not in {i["id"] for i in sync(client).json() if i["status"] != "unavailable"}
+    assert infra_row(SANDBOX_INFRA).status == "unavailable"

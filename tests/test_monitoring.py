@@ -91,7 +91,12 @@ class FakeAWS:
 @pytest.fixture
 def aws(monkeypatch, keys):
     fake = FakeAWS()
-    monkeypatch.setattr(monitoring, "_client", lambda service: fake)
+    fake.accounts = []  # 어느 계정 키로 불렀는지
+
+    def client(service, account="workload"):
+        fake.accounts.append(account)
+        return fake
+    monkeypatch.setattr(monitoring, "_client", client)
     return fake
 
 
@@ -305,3 +310,29 @@ def test_ec2_logs_only_current_deployment(client, aws):
     assert (got["status"], [line["message"] for line in got["lines"]]) == ("ok", ["sample-shop listening on 3000"])
     assert aws.log_group == f"/ec2/sbh-workload-demo-{space['id']}"
     assert aws.stream_query["logStreamNamePrefix"] == f"{dep_id}/"
+
+
+# 계정: 앱의 인프라가 Sandbox면 Sandbox 키로 읽는다
+
+
+def move_to_account(space, account_id):
+    with TestingSession() as db:
+        db.get(models.InfraSpace, space["infra_id"]).aws_account_id = account_id
+        db.commit()
+
+
+def test_sandbox_app_reads_sandbox_account(client, aws):
+    space = deployed(client, compute="lambda")
+    move_to_account(space, "635738234799")
+    aws.metric_values = {"duration_ms": 12.0}
+    assert metrics(client, space)["status"] == "ok"
+    logs(client, space)
+    assert set(aws.accounts) == {"sandbox"}
+
+
+def test_workload_app_reads_workload_account(client, aws):
+    space = deployed(client, compute="lambda")
+    move_to_account(space, "921810471078")
+    aws.metric_values = {"duration_ms": 12.0}
+    metrics(client, space)
+    assert set(aws.accounts) == {"workload"}

@@ -1,8 +1,9 @@
-"""인프라 갱신: Workload 계정에서 InfraId 태그가 붙은 VPC를 읽어 infra_spaces를 채운다 (API 명세 4절).
+"""인프라 갱신: Workload·Sandbox 계정에서 InfraId 태그가 붙은 VPC를 읽어 infra_spaces를 채운다 (API 명세 4절).
 
 인프라 관리자가 미리 만든 인프라를 플랫폼이 읽기만 한다. DB가 비어 있어도 갱신 한 번이면 배포에 쓸
 VPC·서브넷까지 들어간다. AWS에서 사라진 인프라는 지우지 않고 unavailable로 숨긴다 (그 인프라를 쓰는 앱이 있다).
 목록을 볼 때마다 갱신한다(refresh). AWS를 한 번 읽는 데 1초 안팎이라 화면이 기다릴 만하다 (10/2 서버에서 측정).
+Sandbox는 키가 있을 때만 읽는다. 한 계정을 못 읽으면 그 계정 인프라는 DB 값을 그대로 두고, 다른 계정은 갱신한다.
 """
 import logging
 import re
@@ -14,8 +15,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models
-from app.aws import WorkloadKeyMissing, workload_client
-from app.config import get_settings
+from app import aws
+from app.aws import WorkloadKeyMissing, account_client
 from app.ids import now
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,7 @@ class Found:
     id: str
     account_id: str
     vpc_id: str
+    region: str
     tags: dict[str, str]
     public_subnet_ids: list[str] = field(default_factory=list)  # 앱을 올릴 퍼블릭 서브넷 (AZ마다 하나)
     private_subnet_ids: list[str] = field(default_factory=list)
@@ -94,11 +96,11 @@ def sync(db: Session) -> None:
             raise _last_error
         return
     try:
-        found = discover()
+        found, read = discover()
     except SyncError as e:
         _last_error, _next_run = e, time.monotonic() + RETRY_AFTER_FAILURE_SECONDS
         raise
-    apply(db, found)
+    apply(db, found, read)
     db.commit()
     _last_error, _next_run = None, time.monotonic() + COOLDOWN_SECONDS
 
@@ -111,43 +113,53 @@ def refresh(db: Session) -> None:
         db.rollback()
 
 
-def discover() -> list[Found]:
-    try:
-        ec2 = workload_client("ec2")
-        vpcs = _all(ec2, "describe_vpcs", "Vpcs", Filters=[{"Name": "tag-key", "Values": [TAG]}])
-        result = []
-        for vpc in vpcs:
-            tags = {t["Key"]: t["Value"] for t in vpc.get("Tags", [])}
-            infra_id = tags.get(TAG, "").strip()
-            if not ID_PATTERN.match(infra_id):
-                logger.warning("InfraId 형식이 틀린 VPC는 건너뜁니다: %s %r", vpc["VpcId"], infra_id)
-                continue
-            vpc_filter = [{"Name": "vpc-id", "Values": [vpc["VpcId"]]}]
-            subnets = _all(ec2, "describe_subnets", "Subnets", Filters=vpc_filter)
-            tables = _all(ec2, "describe_route_tables", "RouteTables", Filters=vpc_filter)
-            public, private = split_subnets(subnets, tables)
-            names = {s["SubnetId"]: _name(s) for s in subnets}
-            apps = [sid for sid in private if "db" not in names.get(sid, "").lower()]
-            alb = find_shared_alb(infra_id, vpc["VpcId"])
-            result.append(Found(infra_id, vpc["OwnerId"], vpc["VpcId"], tags, public, private, apps, alb))
-    except WorkloadKeyMissing as e:
-        raise SyncError("Workload 키가 설정되지 않아 인프라를 읽을 수 없습니다.") from e
-    except (BotoCoreError, ClientError) as e:
-        logger.warning("인프라 갱신 실패: %s", e)
-        raise SyncError("AWS에서 인프라를 읽지 못했습니다.") from e
+def discover() -> tuple[list[Found], list[str]]:
+    """(찾은 인프라, 읽은 계정). Workload를 못 읽으면 SyncError. Sandbox를 못 읽으면 경고만 남기고 빼고 돌려준다."""
+    result, read = [], []
+    for account in aws.accounts():
+        try:
+            result += _discover_account(account)
+            read.append(account)
+        except WorkloadKeyMissing as e:
+            raise SyncError("Workload 키가 설정되지 않아 인프라를 읽을 수 없습니다.") from e
+        except (BotoCoreError, ClientError) as e:
+            logger.warning("인프라 갱신 실패 (%s): %s", account, e)
+            if account == aws.WORKLOAD:
+                raise SyncError("AWS에서 인프라를 읽지 못했습니다.") from e
     ids = [f.id for f in result]
     if len(ids) != len(set(ids)):
         raise SyncError("같은 InfraId가 붙은 VPC가 여러 개라 갱신하지 않았습니다.")
+    return result, read
+
+
+def _discover_account(account: str) -> list[Found]:
+    ec2 = account_client(account, "ec2")
+    vpcs = _all(ec2, "describe_vpcs", "Vpcs", Filters=[{"Name": "tag-key", "Values": [TAG]}])
+    result = []
+    for vpc in vpcs:
+        tags = {t["Key"]: t["Value"] for t in vpc.get("Tags", [])}
+        infra_id = tags.get(TAG, "").strip()
+        if not ID_PATTERN.match(infra_id):
+            logger.warning("InfraId 형식이 틀린 VPC는 건너뜁니다: %s %r", vpc["VpcId"], infra_id)
+            continue
+        vpc_filter = [{"Name": "vpc-id", "Values": [vpc["VpcId"]]}]
+        subnets = _all(ec2, "describe_subnets", "Subnets", Filters=vpc_filter)
+        tables = _all(ec2, "describe_route_tables", "RouteTables", Filters=vpc_filter)
+        public, private = split_subnets(subnets, tables)
+        names = {s["SubnetId"]: _name(s) for s in subnets}
+        apps = [sid for sid in private if "db" not in names.get(sid, "").lower()]
+        alb = find_shared_alb(account, infra_id, vpc["VpcId"])
+        result.append(Found(infra_id, vpc["OwnerId"], vpc["VpcId"], aws.region(account), tags, public, private, apps, alb))
     return result
 
 
-def find_shared_alb(infra_id: str, vpc_id: str) -> SharedAlb | None:
+def find_shared_alb(account: str, infra_id: str, vpc_id: str) -> SharedAlb | None:
     """VPC 안에서 그 인프라의 공용 ALB를 찾는다. 없으면 None (그 인프라는 앱마다 ALB를 만드는 basic 템플릿을 쓴다).
 
     공용 ALB: 인터넷용 ALB이면서 InfraId 태그가 이 인프라이고, ApplicationId 태그가 없는 것(앱 ALB는 이 태그가 있다).
     HTTPS(443) 리스너와 그 인증서 도메인으로 주소(https://도메인)를 만든다. 하나라도 없으면 공용 ALB로 쓰지 않는다.
     """
-    elb = workload_client("elbv2")
+    elb = account_client(account, "elbv2")
     lbs = [
         lb for lb in _all(elb, "describe_load_balancers", "LoadBalancers")
         if lb.get("VpcId") == vpc_id and lb.get("Type") == "application" and lb.get("Scheme") == "internet-facing"
@@ -170,7 +182,7 @@ def find_shared_alb(infra_id: str, vpc_id: str) -> SharedAlb | None:
     https = [ls for ls in elb.describe_listeners(LoadBalancerArn=lb["LoadBalancerArn"])["Listeners"] if ls.get("Port") == 443]
     if not https or not https[0].get("Certificates") or not lb.get("SecurityGroups"):
         return None
-    cert = workload_client("acm").describe_certificate(CertificateArn=https[0]["Certificates"][0]["CertificateArn"])
+    cert = account_client(account, "acm").describe_certificate(CertificateArn=https[0]["Certificates"][0]["CertificateArn"])
     domain = cert["Certificate"].get("DomainName", "")
     if not domain or "*" in domain:
         return None
@@ -213,8 +225,11 @@ def split_subnets(subnets: list[dict], tables: list[dict]) -> tuple[list[str], l
     )
 
 
-def apply(db: Session, found: list[Found]) -> None:
-    """찾은 인프라는 넣거나 고치고, DB에만 있는 인프라는 unavailable로 숨긴다."""
+def apply(db: Session, found: list[Found], read: list[str] = (aws.WORKLOAD,)) -> None:
+    """찾은 인프라는 넣거나 고치고, 읽은 계정(read)에서 사라진 인프라는 unavailable로 숨긴다.
+
+    못 읽은 계정의 인프라는 그대로 둔다 (Sandbox 키가 잠깐 안 돼도 Sandbox 인프라가 목록에서 사라지지 않게).
+    """
     seen = set()
     for f in found:
         seen.add(f.id)
@@ -225,7 +240,7 @@ def apply(db: Session, found: list[Found]) -> None:
             db.add(row)
         row.name, row.description = info["name"], info["description"]
         row.network, row.computes = info["network"], info["computes"]
-        row.aws_account_id, row.region, row.vpc_id = f.account_id, get_settings().workload_aws_region, f.vpc_id
+        row.aws_account_id, row.region, row.vpc_id = f.account_id, f.region, f.vpc_id
         row.public_subnet_ids, row.private_subnet_ids = f.public_subnet_ids, f.private_subnet_ids
         row.app_subnet_ids = f.app_subnet_ids
         row.alb_listener_arn = f.alb.listener_arn if f.alb else None
@@ -234,7 +249,8 @@ def apply(db: Session, found: list[Found]) -> None:
         # 로드밸런서는 서로 다른 AZ의 퍼블릭 서브넷 2개 이상이 있어야 만들 수 있다
         row.status = "ready" if len(f.public_subnet_ids) >= 2 else "preparing"
     for row in db.scalars(select(models.InfraSpace).where(models.InfraSpace.id.not_in(seen))):
-        row.status = "unavailable"
+        if aws.account_of(row.aws_account_id) in read:
+            row.status = "unavailable"
 
 
 def describe(f: Found) -> dict:

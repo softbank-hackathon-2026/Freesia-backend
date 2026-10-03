@@ -84,8 +84,8 @@ app/
   analysis.py        AI 분석 실행·저장 (백그라운드, running 멈춤 방지)
   deploy.py          배포 진행 기록 (콜백과 가짜 진행이 함께 씀)
   signing.py         워크플로가 부르는 API의 서명 확인
-  aws.py             Workload 계정 boto3 클라이언트 (WORKLOAD_AWS_* 키, 읽기만)
-  infra_sync.py      인프라 갱신: InfraId 태그로 VPC·서브넷을 읽어 infra_spaces를 채움
+  aws.py             Workload·Sandbox 계정 boto3 클라이언트 (WORKLOAD_AWS_*·SANDBOX_AWS_* 키, 읽기만)
+  infra_sync.py      인프라 갱신: Workload·Sandbox 계정에서 InfraId 태그로 VPC·서브넷을 읽어 infra_spaces를 채움
   alb_rules.py       공용 ALB 경로·리스너 규칙 번호 (템플릿 연결 전)
   monitoring.py      배포된 앱의 지표·로그 조회 (Workload 계정 CloudWatch, 읽기만)
   github.py          GitHub 호출: 배포할 커밋 확인, 배포 레포 워크플로 실행 (workflow_dispatch)
@@ -115,6 +115,7 @@ docs/                erd.md, handoff.md
 | `GITHUB_DEPLOY_TOKEN` | 빈 값 | 배포 레포 워크플로 실행 토큰. 비어 있으면 진짜 배포·내리기가 실패로 기록됨 |
 | `DEPLOY_REPO`, `DEPLOY_REF`, `PUBLIC_API_BASE` | `softbank-hackathon-2026/workload-deploy`, `main`, `https://sbh.howon.me/api` | 실행할 배포 레포와 콜백 주소 |
 | `WORKLOAD_AWS_ACCESS_KEY_ID`, `WORKLOAD_AWS_SECRET_ACCESS_KEY` | 빈 값 | 모니터링용 Workload 계정 키 (CloudWatch 읽기만). 서버는 Parameter Store. `AWS_*` 이름을 쓰지 않음 |
+| `SANDBOX_AWS_ACCESS_KEY_ID`, `SANDBOX_AWS_SECRET_ACCESS_KEY` | 빈 값 | Sandbox 계정 읽기 키 (인프라 목록·모니터링). 비어 있으면 Sandbox는 읽지 않음. 서버는 Parameter Store |
 | `AI_MODEL_ID` | 빈 값 | 비어 있으면 분석은 샘플 결과 |
 | `AI_AWS_REGION`, `AI_TIMEOUT_SECONDS`, `AI_SCHEMA_OUTPUT` | `ap-northeast-2`, `60`, `true` | AI 호출 설정 |
 

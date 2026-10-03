@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app import models, monitoring
+from app import aws, models, monitoring
 from app.db import get_db
 from app.routers.app_spaces import find_app_space
 from app.schemas import AppLogs, AppMetrics
@@ -12,6 +12,12 @@ router = APIRouter(prefix="/app-spaces", tags=["monitoring"])
 NOT_DEPLOYED = "지금 실제로 배포되어 있지 않은 앱입니다."
 UNSUPPORTED = "이 컴퓨팅은 아직 모니터링을 지원하지 않습니다."
 COMPUTES = ("ecs-fargate", "lambda", "ec2")
+
+
+def _account(db: Session, app_space_id: str) -> str:
+    """앱이 있는 계정 (인프라의 계정 ID로 고른다)."""
+    infra = db.get(models.InfraSpace, find_app_space(db, app_space_id).infra_id)
+    return aws.account_of(infra.aws_account_id if infra else None)
 
 
 def _live(db: Session, app_space_id: str) -> tuple[models.Deployment | None, str | None, str | None]:
@@ -37,7 +43,7 @@ def get_metrics(app_space_id: str, db: Session = Depends(get_db)) -> AppMetrics:
     if live is None:
         return AppMetrics(status=status, message=message)
     try:
-        values = monitoring.get_metrics(app_space_id, live.compute)
+        values = monitoring.get_metrics(app_space_id, live.compute, _account(db, app_space_id))
     except monitoring.MonitoringError as e:
         return AppMetrics(status="error", message=str(e), compute=live.compute)
     if values["measured_at"] is None:
@@ -60,7 +66,7 @@ def get_logs(
     if live is None:
         return AppLogs(status=status, message=message)
     try:
-        lines = monitoring.get_logs(app_space_id, live.compute, live.id, limit)
+        lines = monitoring.get_logs(app_space_id, live.compute, live.id, limit, _account(db, app_space_id))
     except monitoring.MonitoringError as e:
         return AppLogs(status="error", message=str(e))
     if not lines:

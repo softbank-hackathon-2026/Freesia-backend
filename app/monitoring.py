@@ -1,11 +1,11 @@
-"""배포된 앱의 지표·로그 조회 (API 명세 12절, ADR-017). Workload 계정 CloudWatch를 읽기만 한다.
+"""배포된 앱의 지표·로그 조회 (API 명세 12절, ADR-017). 앱이 있는 계정(Workload·Sandbox)의 CloudWatch를 읽기만 한다.
 
 AWS 자원 이름은 배포 레포 템플릿(ecs-fargate·lambda·ec2/basic)이 앱 ID로 정한다. 그래서 앱 ID와 컴퓨팅만 있으면 찾을 수 있다.
 컴퓨팅마다 지표 종류가 다르다. 응답 칸은 같게 두고, 그 컴퓨팅에 없는 값은 None이다 (10/2 김동윤 님과 맞춤).
 - ecs-fargate: CPU·메모리(%), 로드밸런서 응답 시간·요청 수·5xx 수, 로그
 - lambda: 처리 시간(평균)·호출 수·오류 수, 로그
 - ec2: CPU(%), 로그. 메모리는 CloudWatch 에이전트가 없어서 없다
-키는 WORKLOAD_AWS_* 설정으로 클라이언트를 따로 만든다. 기본 자격증명(ECS 작업 역할)은 Bedrock 호출에 쓴다.
+키는 계정마다 WORKLOAD_AWS_*·SANDBOX_AWS_* 설정으로 클라이언트를 따로 만든다 (app/aws.py). 템플릿은 두 계정에서 이름이 같다.
 """
 import logging
 import time
@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from botocore.exceptions import BotoCoreError, ClientError
 
 from app import models
-from app.aws import WorkloadKeyMissing, workload_client
+from app.aws import WORKLOAD, WorkloadKeyMissing, account_client
 
 logger = logging.getLogger(__name__)
 
@@ -90,9 +90,9 @@ def _aware(at: datetime) -> datetime:
     return at if at.tzinfo else at.replace(tzinfo=timezone.utc)  # SQLite는 시간대를 버린다
 
 
-def _client(service: str):
+def _client(service: str, account: str = WORKLOAD):
     try:
-        return workload_client(service)
+        return account_client(account, service)
     except WorkloadKeyMissing as e:
         raise MonitoringError("모니터링 키가 설정되지 않았습니다.") from e
 
@@ -109,24 +109,26 @@ def _cached(key: tuple, fetch):
     return value
 
 
-def get_metrics(app_id: str, compute: str) -> dict:
+def get_metrics(app_id: str, compute: str, account: str = WORKLOAD) -> dict:
     """최근 1분 값. 칸은 컴퓨팅과 상관없이 같고, 없는 값은 None (모듈 설명 참고)."""
-    return _cached(("metrics", app_id, compute), lambda: _fetch_metrics(app_id, compute))
+    return _cached(("metrics", account, app_id, compute), lambda: _fetch_metrics(app_id, compute, account))
 
 
-def get_logs(app_id: str, compute: str, deployment_id: str, limit: int) -> list[dict]:
+def get_logs(app_id: str, compute: str, deployment_id: str, limit: int, account: str = WORKLOAD) -> list[dict]:
     """최근 로그 줄. 오래된 것부터. 모르는 컴퓨팅은 부르지 않는다 (log_group이 None)."""
     group, prefix = log_group(app_id, compute), log_stream_prefix(compute, deployment_id)
-    return _cached(("logs", app_id, compute, deployment_id, limit), lambda: _fetch_logs(group, prefix, limit))
+    return _cached(
+        ("logs", account, app_id, compute, deployment_id, limit), lambda: _fetch_logs(group, prefix, limit, account)
+    )
 
 
-def _fetch_metrics(app_id: str, compute: str) -> dict:
+def _fetch_metrics(app_id: str, compute: str, account: str) -> dict:
     try:
-        queries = _metric_queries(app_id, compute)
+        queries = _metric_queries(app_id, compute, account)
         if not queries:  # EC2 서버가 아직 없거나 바뀌는 중
             return _metrics_result({})
         end = datetime.now(timezone.utc)
-        r = _client("cloudwatch").get_metric_data(
+        r = _client("cloudwatch", account).get_metric_data(
             MetricDataQueries=queries, StartTime=end - METRICS_WINDOW, EndTime=end, ScanBy="TimestampDescending"
         )
     except (BotoCoreError, ClientError) as e:
@@ -139,7 +141,7 @@ def _fetch_metrics(app_id: str, compute: str) -> dict:
     return _metrics_result(latest)
 
 
-def _metric_queries(app_id: str, compute: str) -> list[dict]:
+def _metric_queries(app_id: str, compute: str, account: str) -> list[dict]:
     """컴퓨팅별 CloudWatch 질의. Id가 응답 칸을 정한다 (_metrics_result)."""
     if compute == "lambda":
         fn = [{"Name": "FunctionName", "Value": lambda_function(app_id)}]
@@ -149,7 +151,7 @@ def _metric_queries(app_id: str, compute: str) -> list[dict]:
             _query("errors", "AWS/Lambda", "Errors", fn, "Sum"),
         ]
     if compute == "ec2":
-        instance_id = _ec2_instance_id(ec2_instance_name(app_id))
+        instance_id = _ec2_instance_id(ec2_instance_name(app_id), account)
         if instance_id is None:
             return []
         return [_query("cpu", "AWS/EC2", "CPUUtilization", [{"Name": "InstanceId", "Value": instance_id}], "Average")]
@@ -159,7 +161,7 @@ def _metric_queries(app_id: str, compute: str) -> list[dict]:
         _query("cpu", "AWS/ECS", "CPUUtilization", ecs, "Average"),
         _query("memory", "AWS/ECS", "MemoryUtilization", ecs, "Average"),
     ]
-    lb_dimension = _load_balancer_dimension(n.load_balancer)
+    lb_dimension = _load_balancer_dimension(n.load_balancer, account)
     if lb_dimension:
         lb = [{"Name": "LoadBalancer", "Value": lb_dimension}]
         queries += [
@@ -203,9 +205,9 @@ def _int(v: float | None) -> int | None:
     return int(v) if v is not None else None
 
 
-def _ec2_instance_id(name: str) -> str | None:
+def _ec2_instance_id(name: str, account: str) -> str | None:
     """Name 태그로 실행 중인 서버를 찾는다. 재배포하면 서버가 바뀌므로 가장 최근에 뜬 것을 쓴다."""
-    r = _client("ec2").describe_instances(Filters=[
+    r = _client("ec2", account).describe_instances(Filters=[
         {"Name": "tag:Name", "Values": [name]},
         {"Name": "instance-state-name", "Values": ["running"]},
     ])
@@ -215,10 +217,10 @@ def _ec2_instance_id(name: str) -> str | None:
     return max(instances, key=lambda i: i["LaunchTime"])["InstanceId"]
 
 
-def _load_balancer_dimension(name: str) -> str | None:
+def _load_balancer_dimension(name: str, account: str) -> str | None:
     """ALB 지표의 차원 값 `app/<이름>/<id>`. ALB가 없으면 None (응답 시간·요청 수만 빠진다)."""
     try:
-        lbs = _client("elbv2").describe_load_balancers(Names=[name])["LoadBalancers"]
+        lbs = _client("elbv2", account).describe_load_balancers(Names=[name])["LoadBalancers"]
     except ClientError as e:
         if e.response.get("Error", {}).get("Code") == "LoadBalancerNotFound":
             return None
@@ -226,8 +228,8 @@ def _load_balancer_dimension(name: str) -> str | None:
     return lbs[0]["LoadBalancerArn"].split(":loadbalancer/", 1)[1] if lbs else None
 
 
-def _fetch_logs(group: str, stream_prefix: str | None, limit: int) -> list[dict]:
-    logs = _client("logs")
+def _fetch_logs(group: str, stream_prefix: str | None, limit: int, account: str) -> list[dict]:
+    logs = _client("logs", account)
     since = int((datetime.now(timezone.utc) - LOGS_WINDOW).timestamp() * 1000)
     try:
         if stream_prefix:  # AWS는 접두어와 LastEventTime 정렬을 같이 쓸 수 없다. 배포 하나에 서버 하나라 스트림이 적다
