@@ -65,6 +65,17 @@ class Found:
     tags: dict[str, str]
     public_subnet_ids: list[str] = field(default_factory=list)  # 앱을 올릴 퍼블릭 서브넷 (AZ마다 하나)
     private_subnet_ids: list[str] = field(default_factory=list)
+    app_subnet_ids: list[str] = field(default_factory=list)  # 프라이빗 중 db가 아닌 것 (shared-alb 앱 자리)
+    alb: "SharedAlb | None" = None
+
+
+@dataclass
+class SharedAlb:
+    """인프라에 미리 만들어 둔 공용 ALB (Multi-AZ). 앱마다 만드는 ALB와는 ApplicationId 태그로 구분한다."""
+
+    listener_arn: str
+    security_group_id: str
+    base_url: str
 
 
 # 서버(Task)마다 따로 기억한다. Task가 2개라 같은 순간에 AWS를 두 번 읽을 수는 있다 (읽기만 해서 괜찮다)
@@ -115,7 +126,10 @@ def discover() -> list[Found]:
             subnets = _all(ec2, "describe_subnets", "Subnets", Filters=vpc_filter)
             tables = _all(ec2, "describe_route_tables", "RouteTables", Filters=vpc_filter)
             public, private = split_subnets(subnets, tables)
-            result.append(Found(infra_id, vpc["OwnerId"], vpc["VpcId"], tags, public, private))
+            names = {s["SubnetId"]: _name(s) for s in subnets}
+            apps = [sid for sid in private if "db" not in names.get(sid, "").lower()]
+            alb = find_shared_alb(infra_id, vpc["VpcId"])
+            result.append(Found(infra_id, vpc["OwnerId"], vpc["VpcId"], tags, public, private, apps, alb))
     except WorkloadKeyMissing as e:
         raise SyncError("Workload 키가 설정되지 않아 인프라를 읽을 수 없습니다.") from e
     except (BotoCoreError, ClientError) as e:
@@ -125,6 +139,46 @@ def discover() -> list[Found]:
     if len(ids) != len(set(ids)):
         raise SyncError("같은 InfraId가 붙은 VPC가 여러 개라 갱신하지 않았습니다.")
     return result
+
+
+def find_shared_alb(infra_id: str, vpc_id: str) -> SharedAlb | None:
+    """VPC 안에서 그 인프라의 공용 ALB를 찾는다. 없으면 None (그 인프라는 앱마다 ALB를 만드는 basic 템플릿을 쓴다).
+
+    공용 ALB: 인터넷용 ALB이면서 InfraId 태그가 이 인프라이고, ApplicationId 태그가 없는 것(앱 ALB는 이 태그가 있다).
+    HTTPS(443) 리스너와 그 인증서 도메인으로 주소(https://도메인)를 만든다. 하나라도 없으면 공용 ALB로 쓰지 않는다.
+    """
+    elb = workload_client("elbv2")
+    lbs = [
+        lb for lb in _all(elb, "describe_load_balancers", "LoadBalancers")
+        if lb.get("VpcId") == vpc_id and lb.get("Type") == "application" and lb.get("Scheme") == "internet-facing"
+    ]
+    if not lbs:
+        return None
+    arns = [lb["LoadBalancerArn"] for lb in lbs]
+    tags = {
+        d["ResourceArn"]: {t["Key"]: t["Value"] for t in d.get("Tags", [])}
+        for i in range(0, len(arns), 20)  # describe_tags는 한 번에 20개까지
+        for d in elb.describe_tags(ResourceArns=arns[i : i + 20])["TagDescriptions"]
+    }
+    shared = [lb for lb in lbs if tags.get(lb["LoadBalancerArn"], {}).get(TAG) == infra_id
+              and "ApplicationId" not in tags.get(lb["LoadBalancerArn"], {})]
+    if len(shared) != 1:
+        if shared:
+            logger.warning("공용 ALB가 여러 개라 쓰지 않습니다: %s", infra_id)
+        return None
+    lb = shared[0]
+    https = [ls for ls in elb.describe_listeners(LoadBalancerArn=lb["LoadBalancerArn"])["Listeners"] if ls.get("Port") == 443]
+    if not https or not https[0].get("Certificates") or not lb.get("SecurityGroups"):
+        return None
+    cert = workload_client("acm").describe_certificate(CertificateArn=https[0]["Certificates"][0]["CertificateArn"])
+    domain = cert["Certificate"].get("DomainName", "")
+    if not domain or "*" in domain:
+        return None
+    return SharedAlb(https[0]["ListenerArn"], lb["SecurityGroups"][0], f"https://{domain}")
+
+
+def _name(subnet: dict) -> str:
+    return next((t["Value"] for t in subnet.get("Tags", []) if t["Key"] == "Name"), "")
 
 
 def _all(client, method: str, key: str, **kwargs) -> list[dict]:
@@ -147,18 +201,15 @@ def split_subnets(subnets: list[dict], tables: list[dict]) -> tuple[list[str], l
         table = by_subnet.get(subnet["SubnetId"], main)
         return bool(table) and any(r.get("GatewayId", "").startswith("igw-") for r in table.get("Routes", []))
 
-    def name(subnet: dict) -> str:
-        return next((t["Value"] for t in subnet.get("Tags", []) if t["Key"] == "Name"), "")
-
     public, private = {}, []
-    for s in sorted(subnets, key=lambda s: ("nat" in name(s).lower(), name(s), s["SubnetId"])):
+    for s in sorted(subnets, key=lambda s: ("nat" in _name(s).lower(), _name(s), s["SubnetId"])):
         if not is_public(s):
             private.append(s)
         elif s["AvailabilityZone"] not in public:
             public[s["AvailabilityZone"]] = s
     return (
         [public[az]["SubnetId"] for az in sorted(public)],
-        [s["SubnetId"] for s in sorted(private, key=lambda s: (s["AvailabilityZone"], name(s), s["SubnetId"]))],
+        [s["SubnetId"] for s in sorted(private, key=lambda s: (s["AvailabilityZone"], _name(s), s["SubnetId"]))],
     )
 
 
@@ -176,6 +227,10 @@ def apply(db: Session, found: list[Found]) -> None:
         row.network, row.computes = info["network"], info["computes"]
         row.aws_account_id, row.region, row.vpc_id = f.account_id, get_settings().workload_aws_region, f.vpc_id
         row.public_subnet_ids, row.private_subnet_ids = f.public_subnet_ids, f.private_subnet_ids
+        row.app_subnet_ids = f.app_subnet_ids
+        row.alb_listener_arn = f.alb.listener_arn if f.alb else None
+        row.alb_security_group_id = f.alb.security_group_id if f.alb else None
+        row.alb_base_url = f.alb.base_url if f.alb else None
         # 로드밸런서는 서로 다른 AZ의 퍼블릭 서브넷 2개 이상이 있어야 만들 수 있다
         row.status = "ready" if len(f.public_subnet_ids) >= 2 else "preparing"
     for row in db.scalars(select(models.InfraSpace).where(models.InfraSpace.id.not_in(seen))):

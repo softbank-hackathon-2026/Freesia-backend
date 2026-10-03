@@ -120,6 +120,27 @@ TEMPLATES: dict[str, Template] = {
 }
 
 
+# Multi-AZ처럼 공용 ALB가 있는 인프라의 Fargate (배포 레포 templates/ecs-fargate/shared-alb, 10/3 박소정 님).
+# AI가 채우는 값은 basic과 같고, 백엔드가 path_pattern·rule_priority를 더 넣는다 (app/alb_rules.py)
+SHARED_ALB = Template(
+    compute="ecs-fargate",
+    name="ecs-fargate/shared-alb",
+    ready=True,
+    fill=_fargate_values,
+    plan_name="공용 ALB형",
+    summary="인프라의 공용 ALB(HTTPS) 뒤에 경로로 붙고, 앱은 프라이빗 서브넷에서 실행하는 구성",
+    pros=["로드밸런서를 새로 만들지 않아 배포가 빠름", "공용 HTTPS 주소 하나로 여러 앱을 경로로 나눔", "앱이 인터넷에 직접 노출되지 않음"],
+    cons=["앱 코드가 맡은 경로(예: /api)로 응답해야 함", "프라이빗 서브넷이라 NAT가 켜져 있어야 이미지를 받음"],
+)
+
+
+def template_for(compute: str, infra: Any) -> Template:
+    """인프라에 맞는 템플릿. 공용 ALB와 앱 서브넷 2개 이상이 있는 인프라의 Fargate는 shared-alb, 나머지는 기본."""
+    if compute == "ecs-fargate" and infra is not None and infra.alb_listener_arn and len(infra.app_subnet_ids or []) >= 2:
+        return SHARED_ALB
+    return TEMPLATES[compute]
+
+
 def is_ready(compute: str) -> bool:
     template = TEMPLATES.get(compute)
     return bool(template and template.ready)

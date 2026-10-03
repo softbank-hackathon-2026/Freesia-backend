@@ -45,6 +45,33 @@ def check_route(db: Session, infra_id: str, route: str, exclude_app_id: str | No
             raise RouteConflict(f"이 인프라에서 이미 쓰는 경로({other})와 겹칩니다.")
 
 
+def default_route(repo_url: str) -> str:
+    """경로를 고르지 않은 앱의 경로. 저장소 이름이 -api로 끝나면 /api, 아니면 / (10/3 박태원 결정, 시연용 규칙)."""
+    return "/api" if repo_url.rstrip("/").rsplit("/", 1)[-1].lower().endswith("-api") else ROOT
+
+
+def ensure_route(db: Session, space: models.AppSpace) -> str:
+    """앱 경로를 정해 저장하고(flush) 돌려준다. 같은 인프라에서 겹치면 RouteConflict."""
+    if space.route_path is None:
+        route = default_route(space.repo_url)
+        check_route(db, space.infra_id, route, exclude_app_id=space.id)
+        space.route_path = route
+        db.flush()
+    return space.route_path
+
+
+def path_pattern(route: str) -> str:
+    """ALB 경로 규칙. /api → /api/*, / → /*."""
+    return "/*" if route == ROOT else f"{route}/*"
+
+
+def health_path_under(route: str, health: str) -> str:
+    """헬스체크 경로는 앱이 맡은 경로 안이어야 한다 (공용 주소로 확인하므로). 밖이면 경로 앞에 붙인다: /health → /api/health."""
+    if route == ROOT or health.startswith(route + "/"):
+        return health
+    return route + health
+
+
 def assign_priority(db: Session, space: models.AppSpace) -> int:
     """앱의 리스너 규칙 번호. 처음이면 새로 정해 저장하고(flush), 있으면 그대로 돌려준다. commit은 부르는 쪽."""
     if space.alb_rule_priority is not None:

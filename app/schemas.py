@@ -187,7 +187,11 @@ class PlanInfra(BaseModel):
     id: str
     vpc_id: str | None
     public_subnet_ids: list[str]
-    private_subnet_ids: list[str]
+    private_subnet_ids: list[str] = Field(description="shared-alb 구성안이면 앱 서브넷(db 제외)만")
+    aws_account_id: str | None = Field(None, description="배포할 계정. 없으면 칸을 빼고, 워크플로는 Workload로 배포")
+    alb_listener_arn: str | None = None
+    alb_security_group_id: str | None = None
+    alb_base_url: str | None = None
 
 
 class WorkflowPlan(BaseModel):

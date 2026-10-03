@@ -27,6 +27,10 @@ erDiagram
         varchar vpc_id
         json public_subnet_ids
         json private_subnet_ids
+        json app_subnet_ids
+        varchar alb_listener_arn
+        varchar alb_security_group_id
+        varchar alb_base_url
         timestamptz created_at
     }
 
@@ -149,6 +153,8 @@ erDiagram
 | `vpc_id` | varchar(32) | | | 배포 때 워크플로에 넘긴다 (박소정 님 10/2) |
 | `public_subnet_ids` | json | | | 〃 |
 | `private_subnet_ids` | json | | | 〃 |
+| `app_subnet_ids` | json | | | 프라이빗 중 이름에 db가 없는 서브넷. shared-alb 앱을 두는 자리 (마이그레이션 0009) |
+| `alb_listener_arn`, `alb_security_group_id`, `alb_base_url` | varchar | | | 인프라에 미리 만든 공용 ALB(InfraId 태그, ApplicationId 태그 없음)의 443 리스너·보안그룹·`https://인증서 도메인`. 있으면 Fargate는 `ecs-fargate/shared-alb` (0009) |
 | `created_at` | timestamptz | | O | 목록 순서 |
 
 ### repositories (등록된 저장소) · 구현됨

@@ -23,4 +23,9 @@ class InfraSpace(Base):
     vpc_id: Mapped[str | None] = mapped_column(String(32))
     public_subnet_ids: Mapped[list[str] | None] = mapped_column(JSON)
     private_subnet_ids: Mapped[list[str] | None] = mapped_column(JSON)
+    # 공용 ALB가 있는 인프라(Multi-AZ). 있으면 Fargate 앱을 ecs-fargate/shared-alb로 그 ALB 뒤에 붙인다 (app/catalog.py)
+    alb_listener_arn: Mapped[str | None] = mapped_column(String(200))  # 공용 ALB의 HTTPS(443) 리스너
+    alb_security_group_id: Mapped[str | None] = mapped_column(String(32))
+    alb_base_url: Mapped[str | None] = mapped_column(String(200))  # 예: https://demo.howon.me (끝 / 없음)
+    app_subnet_ids: Mapped[list[str] | None] = mapped_column(JSON)  # 앱을 둘 프라이빗 서브넷 (db 서브넷 제외)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
