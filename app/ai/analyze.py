@@ -30,7 +30,7 @@ SYSTEM_PROMPT = """\
 규칙:
 - 후보는 요청의 computes에 있는 값만 쓰고, computes의 컴퓨팅을 하나도 빠뜨리지 않고 한 번씩 모두 후보에 넣습니다.
 - state는 selected(추천) 정확히 1개, alternative(가능한 대안), unsuitable(비추천) 중 하나입니다. selected를 목록 맨 앞에 둡니다.
-- unsuitable을 뺀 후보가 2~3개 남아야 합니다. computes가 2개뿐이면 둘 다 selected와 alternative로 두고, 약한 쪽의 단점은 cons에 적습니다.
+- unsuitable을 뺀 후보가 2~3개 남아야 합니다. computes가 2개뿐이면 둘 다 selected와 alternative로 두고, 약한 쪽의 단점은 cons에 적습니다. computes가 1개면 그 하나를 selected로 둡니다.
 - 모든 후보에 reason, cons, evidence_files를 채웁니다. 선택되지 않은 후보도 마찬가지입니다.
 - evidence에는 파일에서 실제로 읽은 사실만 씁니다. file은 제공된 파일 경로 중 하나여야 합니다. 파일에서 확인했으면 certain=true, 추정이면 false입니다.
 - evidence_files에는 evidence[].file에 있는 경로만 씁니다.
@@ -119,7 +119,8 @@ def run_analysis(repo_url: str, branch: str, computes: list[str]) -> tuple[Analy
         logger.warning("저장소 읽기 실패: %s (%s)", repo_url, branch, exc_info=True)
         return _failed(str(e)), None
     paths, missing = pick_stage1(files)
-    if "Dockerfile" in missing:  # 지원 범위 밖이라 모델을 부르지 않는다 (ADR-009, 시간·비용 절약)
+    # 지원 범위 밖이라 모델을 부르지 않는다 (ADR-009, 시간·비용 절약). 온프레미스 vm은 소스를 직접 빌드해 Dockerfile이 없어도 된다
+    if "Dockerfile" in missing and "vm" not in computes:
         return _failed(NO_DOCKERFILE_MESSAGE), sha
     out = _ask(1, paths, files, missing, computes)
     if out is None:
@@ -174,7 +175,7 @@ def validate(r: ModelOutput, paths: list[str], computes: list[str]) -> None:
     evidence_files = {e.file for e in r.evidence}
     check(sorted(c.compute for c in r.candidates) == sorted(computes), "V2·V3 후보는 computes와 같아야 함")
     check(states[:1] == ["selected"] and states.count("selected") == 1, "V4 selected는 1개이고 맨 앞")
-    check(2 <= len([s for s in states if s != "unsuitable"]) <= 3, "V5 unsuitable을 뺀 후보는 2~3개")
+    check(min(2, len(computes)) <= len([s for s in states if s != "unsuitable"]) <= 3, "V5 unsuitable을 뺀 후보는 2~3개(computes가 1개면 1개)")
     check(evidence_files <= set(paths), "V6 evidence[].file은 읽은 파일만")
     check(all(set(c.evidence_files) <= evidence_files for c in r.candidates), "V7 evidence_files는 evidence[].file 중에서")
     check(r.requirements and r.evidence, "V9 done이면 requirements와 evidence가 1개 이상")

@@ -3,13 +3,15 @@
 컴퓨팅마다 배포 레포 workload-deploy의 templates/<이름>/variables.tf에서 "Filled per app"으로 표시된 변수와
 이름을 똑같이 쓴다. 여기에는 AI에게 물을 것(타입, 고를 수 있는 값, 설명)만 두고, 범위 검사와 기본값은
 app/catalog.py가 한다. 템플릿이 catalog에 등록(ready)된 뒤 여기에 추가한다.
+온프레미스 vm은 Terraform이 아니라 배포 레포 ansible/playbooks/deploy.yml이고, 값 이름·범위는 scripts/vm_plan.py
+check_values를 따른다. catalog에 아직 없어서 검사는 여기 _vm_check가 한다.
 필드 순서는 fit_values가 값을 넣어 보는 순서라, 다른 값에 따라 범위가 바뀌는 값(Fargate memory)을 뒤에 둔다.
 enum은 템플릿이 허용하는 값을 그대로 옮길 때만 건다. 범위를 AI 쪽에서 좁히지 않는다 (상한은 catalog·템플릿이 정한다).
 """
 import logging
 from typing import Any
 
-from app.catalog import EC2_INSTANCE_TYPES, FARGATE_MEMORY, LAMBDA_MIN_PORT, fill_values
+from app.catalog import EC2_INSTANCE_TYPES, FARGATE_MEMORY, LAMBDA_MIN_PORT, PATH_RE, TEMPLATES, fill_values
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +70,73 @@ TEMPLATE_FIELDS: dict[str, dict[str, dict[str, Any]]] = {
             "description": "EC2 서버 크기. 기본은 t3.micro이고, JVM·머신러닝 라이브러리처럼 무거운 런타임일 때만 t3.small·t3.medium으로 키웁니다.",
         },
     },
+    # 온프레미스 VM. Docker 없이 VM(Ubuntu)에 런타임을 apt로 설치하고 소스를 빌드해 systemd로 실행한다.
+    # ponytail: env(앱 환경변수)는 뺐다. 열린 키 객체는 스키마 출력에서 막힐 수 있고 비밀값을 AI가 채우면 안 된다
+    "vm": {
+        "runtime": {
+            "type": "string",
+            "enum": ["python", "node", "java"],
+            "description": "앱 언어. 의존성 파일(requirements.txt·pyproject.toml / package.json / pom.xml·build.gradle)로 정합니다.",
+        },
+        "app_port": {
+            "type": "integer",
+            "description": "앱이 요청을 받는 포트(1024~65535 정수). 앱은 일반 사용자로 실행되고 PORT 환경변수로 이 값을 받습니다. "
+            "코드의 listen·설정 파일로 확인하고, 코드가 PORT 환경변수를 읽으면 확인한 기본 포트를 그대로 씁니다. "
+            "1024 미만이면 앱이 PORT를 읽을 때만 8080을 씁니다. Java Tomcat(java_server=tomcat)이면 8080입니다.",
+        },
+        "health_check_path": _HEALTH,
+        "build_command": {
+            "type": "string",
+            "description": "앱 폴더에서 한 번 실행할 설치·빌드 명령(한 줄). 예: npm ci && npm run build / "
+            "python3 -m venv .venv && .venv/bin/pip install -r requirements.txt / ./mvnw -q package -DskipTests. "
+            "필요 없으면 빈 문자열입니다.",
+        },
+        "start_command": {
+            "type": "string",
+            "description": "앱을 실행하는 명령(한 줄). systemd가 앱 폴더에서 실행하고 포그라운드로 계속 떠 있어야 합니다. "
+            "예: npm start / .venv/bin/gunicorn -b 0.0.0.0:$PORT app:app / java -jar target/app.jar. "
+            "build_command에서 만든 가상환경·빌드 결과 경로를 맞춰 씁니다. java_server=tomcat이면 빈 문자열입니다.",
+        },
+        "runtime_version": {
+            "type": "string",
+            "enum": ["17", "21"],
+            "description": "Java 버전(pom.xml·build.gradle의 java 버전에 가까운 값). Java가 아니면 21입니다. "
+            "Python·Node는 버전을 고를 수 없고 Ubuntu 기본 패키지를 씁니다.",
+        },
+        "java_server": {
+            "type": "string",
+            "enum": ["none", "tomcat"],
+            "description": "Java 앱을 WAR로 Tomcat에 올릴 때만 tomcat입니다(pom.xml packaging이 war). 그 외에는 none입니다.",
+        },
+        "war_file": {
+            "type": "string",
+            "description": "java_server=tomcat일 때 빌드가 만드는 WAR 경로(glob 가능). 그 외에는 target/*.war입니다.",
+        },
+    },
 }
+
+
+def _vm_check(raw: dict[str, Any]) -> None:
+    """vm 값 검사. 배포 레포 scripts/vm_plan.py check_values와 같은 규칙이다(그쪽이 배포 전에 다시 검사한다)."""
+    for name, value in raw.items():
+        spec = TEMPLATE_FIELDS["vm"][name]
+        if "enum" in spec and value not in spec["enum"]:
+            raise ValueError(f"{name}는 {', '.join(spec['enum'])} 중 하나여야 합니다.")
+        if spec["type"] == "string" and not (isinstance(value, str) and "\n" not in value and len(value) <= 500):
+            raise ValueError(f"{name}는 500자 이하 한 줄 문자열이어야 합니다.")
+    port = raw.get("app_port", 8080)
+    if not (isinstance(port, int) and not isinstance(port, bool) and 1024 <= port <= 65535):
+        raise ValueError("app_port는 1024~65535 정수여야 합니다.")
+    if not PATH_RE.match(raw.get("health_check_path", "/")):
+        raise ValueError("health_check_path는 /로 시작하는 URL 경로여야 합니다.")
+
+
+def _check(compute: str, values: dict[str, Any]) -> None:
+    # catalog에 없는 컴퓨팅(vm)만 여기서 검사한다. catalog에 등록되면 catalog 검사로 바뀐다
+    if compute in TEMPLATES:
+        fill_values(compute, values)
+    else:
+        _vm_check(values)
 
 
 def fit_values(compute: str, raw: Any) -> dict[str, Any]:
@@ -84,7 +152,7 @@ def fit_values(compute: str, raw: Any) -> dict[str, Any]:
         if name not in raw:
             continue
         try:
-            fill_values(compute, {**kept, name: raw[name]})
+            _check(compute, {**kept, name: raw[name]})
         except ValueError as e:
             logger.warning("템플릿 값을 버립니다 (%s.%s=%r): %s", compute, name, raw[name], e)
             continue

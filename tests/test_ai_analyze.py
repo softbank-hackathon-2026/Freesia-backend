@@ -82,6 +82,16 @@ def test_no_dockerfile_skips_model(repo_files, model):
     assert (result.status, result.mascot_message, sha, prompts) == ("failed", NO_DOCKERFILE_MESSAGE, SHA, [])
 
 
+def test_vm_analyzes_without_dockerfile(repo_files, model):
+    """온프레미스 vm은 소스를 직접 빌드해서 Dockerfile이 없어도 모델을 부른다. 후보가 vm 하나라도 통과한다."""
+    del repo_files["Dockerfile"]
+    evidence = [{"file": "package.json", "finding": "Node 앱", "certain": True}]
+    prompts = model(output(evidence=evidence, candidates=[cand("vm", "selected", ["package.json"])], template_values={"vm": VM_GOOD}))
+    result, _ = run_analysis(URL, "main", ["vm"])
+    assert (result.status, len(prompts)) == ("done", 1)
+    assert [c.compute for c in result.candidates] == ["vm"] and result.template_values["vm"] == VM_GOOD
+
+
 def test_repo_error_is_failed(monkeypatch):
     def broken(url, branch):
         raise RepoError("저장소나 브랜치를 찾을 수 없어요.")
@@ -116,6 +126,12 @@ def test_validation_violation_is_failed(repo_files, model, over):
     assert (result.status, result.mascot_message, result.candidates) == ("failed", FAIL_MESSAGE, [])
 
 
+def test_single_compute_passes(repo_files, model):
+    model(output(candidates=[cand("ecs-fargate", "selected", ["Dockerfile"])]))
+    result, _ = run_analysis(URL, "main", ["ecs-fargate"])
+    assert result.status == "done" and [c.compute for c in result.candidates] == ["ecs-fargate"]
+
+
 def test_bedrock_error_is_failed(repo_files, monkeypatch):
     from botocore.exceptions import ClientError
 
@@ -132,6 +148,8 @@ def test_bedrock_error_is_failed(repo_files, monkeypatch):
 GOOD = {"container_port": 3000, "health_check_path": "/health", "cpu": 256, "memory": 512}
 LAMBDA_GOOD = {"container_port": 3000, "health_check_path": "/health", "memory": 512, "timeout": 30}
 EC2_GOOD = {"container_port": 3000, "health_check_path": "/health", "instance_type": "t3.micro"}
+VM_GOOD = {"runtime": "node", "app_port": 3000, "health_check_path": "/health", "build_command": "npm ci",
+           "start_command": "npm start", "runtime_version": "21", "java_server": "none", "war_file": "target/*.war"}
 
 
 def without(values, *names):
@@ -139,7 +157,7 @@ def without(values, *names):
 
 
 def test_template_values_saved(repo_files, model):
-    values = {"ecs-fargate": GOOD, "lambda": LAMBDA_GOOD, "ec2": EC2_GOOD}
+    values = {"ecs-fargate": GOOD, "lambda": LAMBDA_GOOD, "ec2": EC2_GOOD, "vm": VM_GOOD}
     model(output(template_values=values))
     result, _ = run_analysis(URL, "main", COMPUTES)
     assert result.template_values == values
@@ -157,6 +175,13 @@ def test_template_values_saved(repo_files, model):
         ("ecs-fargate", "모양이 틀림", {}),
         ("lambda", {**LAMBDA_GOOD, "container_port": 80}, without(LAMBDA_GOOD, "container_port")),  # Lambda는 1024 미만 포트를 못 연다
         ("ec2", {**EC2_GOOD, "instance_type": "t2.micro"}, without(EC2_GOOD, "instance_type")),  # 템플릿 밖 서버 크기
+        # vm은 배포 레포 vm_plan.py check_values 규칙
+        ("vm", {**VM_GOOD, "app_port": 80}, without(VM_GOOD, "app_port")),  # 일반 사용자라 1024 미만 포트를 못 연다
+        ("vm", {**VM_GOOD, "runtime": "ruby"}, without(VM_GOOD, "runtime")),
+        ("vm", {**VM_GOOD, "runtime_version": "11"}, without(VM_GOOD, "runtime_version")),
+        ("vm", {**VM_GOOD, "start_command": "npm start\nrm -rf /"}, without(VM_GOOD, "start_command")),  # 한 줄만
+        ("vm", {**VM_GOOD, "build_command": None}, without(VM_GOOD, "build_command")),
+        ("vm", {**VM_GOOD, "health_check_path": "health"}, without(VM_GOOD, "health_check_path")),
     ],
 )
 def test_wrong_template_values_fall_back_per_field(repo_files, model, compute, given, expected):
@@ -182,6 +207,8 @@ def test_failed_has_no_template_values(repo_files, model):
 def test_template_fields_match_catalog():
     """양식의 이름이 catalog(= variables.tf)와 다르면 AI 값이 오류 없이 버려진다. 템플릿을 추가할 때 여기서 잡는다."""
     for compute, fields in TEMPLATE_FIELDS.items():
+        if compute == "vm":  # catalog 밖. 기준은 배포 레포 scripts/vm_plan.py (template_fields._vm_check)
+            continue
         assert catalog.is_ready(compute), compute
         assert set(catalog.fill_values(compute)) == set(fields), compute
     assert set(analyze.RESULT_SCHEMA["properties"]["template_values"]["required"]) == set(TEMPLATE_FIELDS)
