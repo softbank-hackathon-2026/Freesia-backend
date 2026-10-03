@@ -2,14 +2,15 @@
 from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.orm import Session
 
-from app import models, signing
+from app import catalog, models, signing
 from app.db import get_db
 from app.schemas import PlanInfra, WorkflowPlan
 
 router = APIRouter(prefix="/plans", tags=["plans"])
 
 
-@router.get("/{plan_id}", response_model=WorkflowPlan, summary="구성안 값 (워크플로 전용)")
+# 값이 없는 칸은 뺀다. 워크플로는 aws_account_id가 비어 있으면 거절하고, 없으면 Workload로 배포한다 (배포 레포 plan.py)
+@router.get("/{plan_id}", response_model=WorkflowPlan, response_model_exclude_none=True, summary="구성안 값 (워크플로 전용)")
 def get_plan_for_workflow(
     plan_id: str,
     signature: str | None = Header(None, alias="X-Hub-Signature-256"),
@@ -25,6 +26,7 @@ def get_plan_for_workflow(
     if plan is None:
         raise HTTPException(404, detail={"error": "plan_not_found", "message": "구성안을 찾을 수 없습니다."})
     infra = db.get(models.InfraSpace, db.get(models.AppSpace, plan.app_space_id).infra_id)
+    shared = plan.template == catalog.SHARED_ALB.name
     return WorkflowPlan(
         id=plan.id,
         template=plan.template,
@@ -33,6 +35,11 @@ def get_plan_for_workflow(
             id=infra.id,
             vpc_id=infra.vpc_id,
             public_subnet_ids=infra.public_subnet_ids or [],
-            private_subnet_ids=infra.private_subnet_ids or [],
+            # shared-alb는 앱을 프라이빗 서브넷에 둔다. db 서브넷에 뜨지 않게 앱 서브넷만 넘긴다
+            private_subnet_ids=(infra.app_subnet_ids if shared else infra.private_subnet_ids) or [],
+            aws_account_id=infra.aws_account_id or None,
+            alb_listener_arn=infra.alb_listener_arn,
+            alb_security_group_id=infra.alb_security_group_id,
+            alb_base_url=infra.alb_base_url,
         ),
     )

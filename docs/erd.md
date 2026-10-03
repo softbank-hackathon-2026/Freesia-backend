@@ -27,6 +27,10 @@ erDiagram
         varchar vpc_id
         json public_subnet_ids
         json private_subnet_ids
+        json app_subnet_ids
+        varchar alb_listener_arn
+        varchar alb_security_group_id
+        varchar alb_base_url
         timestamptz created_at
     }
 
@@ -52,6 +56,8 @@ erDiagram
         timestamptz teardown_finished_at
         varchar teardown_reason
         timestamptz deleted_at
+        varchar route_path
+        int alb_rule_priority
         timestamptz created_at
     }
 
@@ -147,6 +153,8 @@ erDiagram
 | `vpc_id` | varchar(32) | | | 배포 때 워크플로에 넘긴다 (박소정 님 10/2) |
 | `public_subnet_ids` | json | | | 〃 |
 | `private_subnet_ids` | json | | | 〃 |
+| `app_subnet_ids` | json | | | 프라이빗 중 이름에 db가 없는 서브넷. shared-alb 앱을 두는 자리 (마이그레이션 0009) |
+| `alb_listener_arn`, `alb_security_group_id`, `alb_base_url` | varchar | | | 인프라에 미리 만든 공용 ALB(InfraId 태그, ApplicationId 태그 없음)의 443 리스너·보안그룹·`https://인증서 도메인`. 있으면 Fargate는 `ecs-fargate/shared-alb` (0009) |
 | `created_at` | timestamptz | | O | 목록 순서 |
 
 ### repositories (등록된 저장소) · 구현됨
@@ -178,6 +186,8 @@ erDiagram
 | `teardown_finished_at` | timestamptz | | | 내리기 콜백을 받은 시각 |
 | `teardown_reason` | varchar(1000) | | | 내리기 실패 이유 |
 | `deleted_at` | timestamptz | | | 앱 삭제(목록에서 숨기기) 시각. 있으면 목록·상세·`app_count`에서 빠진다. 기록은 남긴다 (마이그레이션 0007) |
+| `route_path` | varchar(100) | | | 공용 ALB 뒤에 붙을 때 받을 경로(`/api`, `/`). 같은 인프라의 살아 있는 앱끼리 겹치면 안 됨 (마이그레이션 0008) |
+| `alb_rule_priority` | int | | | 공용 ALB 리스너 규칙 번호. 구체 경로 100번대, `/` 1000번대. 처음 배포할 때 정하고 다시 쓰지 않음 (0008) |
 | `created_at` | timestamptz | | O | |
 
 ### analyses (AI 견적) · 구현됨
