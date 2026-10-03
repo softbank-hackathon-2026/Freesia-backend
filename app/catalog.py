@@ -72,6 +72,53 @@ def _ec2_values(raw: dict[str, Any]) -> dict[str, Any]:
     return {"container_port": _port(raw, 80), "instance_type": instance_type, "health_check_path": _path(raw)}
 
 
+# 온프레미스 VM (배포 레포 ansible/playbooks/deploy.yml, 10/3 박소정 님). 범위·기본값은 scripts/vm_plan.py check_values와 같다
+VM_RUNTIMES = ["python", "node", "java"]
+VM_JAVA_VERSIONS = ["17", "21"]
+VM_JAVA_SERVERS = ["none", "tomcat"]
+
+
+def _one_of(raw: dict[str, Any], name: str, default: Any, allowed: list[Any]) -> Any:
+    v = raw.get(name, default)
+    if v not in allowed:
+        raise ValueError(f"{name}는 {', '.join(map(str, allowed))} 중 하나여야 합니다.")
+    return v
+
+
+def _line(raw: dict[str, Any], name: str, default: str) -> str:
+    v = raw.get(name, default)
+    if not (isinstance(v, str) and "\n" not in v and len(v) <= 500):
+        raise ValueError(f"{name}는 500자 이하 한 줄 문자열이어야 합니다.")
+    return v
+
+
+def _vm_values(raw: dict[str, Any]) -> dict[str, Any]:
+    """runtime·start_command는 기본값이 없어서 비어 있어도 통과시키고(AI 값을 칸마다 넣어 보는 fit_values 때문),
+    구성안을 만들 때 vm_missing으로 막는다. env·tomcat_version은 AI가 채우지 않아 배포 레포 기본값에 맡긴다."""
+    runtime = raw.get("runtime")
+    if runtime is not None and runtime not in VM_RUNTIMES:
+        raise ValueError(f"runtime은 {', '.join(VM_RUNTIMES)} 중 하나여야 합니다.")
+    return {
+        "runtime": runtime,
+        "app_port": _int_in(raw, "app_port", 8080, 1024, 65535),  # 앱은 일반 사용자로 실행된다
+        "health_check_path": _path(raw),
+        "build_command": _line(raw, "build_command", ""),
+        "start_command": _line(raw, "start_command", ""),
+        "runtime_version": _one_of(raw, "runtime_version", "21", VM_JAVA_VERSIONS),
+        "java_server": _one_of(raw, "java_server", "none", VM_JAVA_SERVERS),
+        "war_file": _line(raw, "war_file", "target/*.war"),
+    }
+
+
+def vm_missing(values: dict[str, Any]) -> list[str]:
+    """VM 배포에 꼭 필요한데 기본값이 없는 값. 비어 있지 않으면 구성안을 만들 수 없다."""
+    missing = [] if values.get("runtime") else ["runtime"]
+    tomcat = values.get("runtime") == "java" and values.get("java_server") == "tomcat"
+    if not values.get("start_command") and not tomcat:
+        missing.append("start_command")
+    return missing
+
+
 @dataclass(frozen=True)
 class Template:
     compute: str
@@ -116,6 +163,18 @@ TEMPLATES: dict[str, Template] = {
         summary="퍼블릭 서브넷의 EC2 서버 1대에서 Docker로 앱을 실행하는 구성",
         pros=["서버를 직접 들여다볼 수 있음", "작은 서버로 시작해 비용이 예측 가능"],
         cons=["서버 1대라 장애나 재배포 때 잠깐 멈춤", "재배포하면 주소가 바뀜"],
+    ),
+    # 10/3 온프레미스. Terraform이 아니라 배포 레포 deploy-vm.yml(Ansible)이 실행한다. 이름은 폴더가 아니라 구분용.
+    # ready는 백엔드가 vm 배포를 deploy-vm.yml로 보내게 된 뒤에 켠다 (지금은 deploy.yml로만 보낸다)
+    "vm": Template(
+        compute="vm",
+        name="vm",
+        ready=False,
+        fill=_vm_values,
+        plan_name="기본형",
+        summary="온프레미스 VM에 언어 런타임을 설치하고 소스를 빌드해 서비스(systemd)로 실행하는 구성",
+        pros=["Dockerfile 없이 소스 그대로 배포", "사내 서버에 그대로 올라가 데이터가 밖으로 나가지 않음"],
+        cons=["Python·Node·Java만 지원하고 Python·Node 버전은 고를 수 없음", "VM 1대라 장애나 재배포 때 잠깐 멈춤"],
     ),
 }
 

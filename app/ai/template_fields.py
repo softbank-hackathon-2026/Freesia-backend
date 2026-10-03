@@ -2,16 +2,16 @@
 
 컴퓨팅마다 배포 레포 workload-deploy의 templates/<이름>/variables.tf에서 "Filled per app"으로 표시된 변수와
 이름을 똑같이 쓴다. 여기에는 AI에게 물을 것(타입, 고를 수 있는 값, 설명)만 두고, 범위 검사와 기본값은
-app/catalog.py가 한다. 템플릿이 catalog에 등록(ready)된 뒤 여기에 추가한다.
+app/catalog.py가 한다. 템플릿이 catalog에 등록된 뒤 여기에 추가한다.
 온프레미스 vm은 Terraform이 아니라 배포 레포 ansible/playbooks/deploy.yml이고, 값 이름·범위는 scripts/vm_plan.py
-check_values를 따른다. catalog에서 아직 준비(ready) 전이라 검사는 여기 _vm_check가 한다.
+check_values를 따르고, 검사·기본값은 다른 컴퓨팅처럼 catalog(_vm_values)가 한다.
 필드 순서는 fit_values가 값을 넣어 보는 순서라, 다른 값에 따라 범위가 바뀌는 값(Fargate memory)을 뒤에 둔다.
 enum은 템플릿이 허용하는 값을 그대로 옮길 때만 건다. 범위를 AI 쪽에서 좁히지 않는다 (상한은 catalog·템플릿이 정한다).
 """
 import logging
 from typing import Any
 
-from app.catalog import EC2_INSTANCE_TYPES, FARGATE_MEMORY, LAMBDA_MIN_PORT, PATH_RE, fill_values, is_ready
+from app.catalog import EC2_INSTANCE_TYPES, FARGATE_MEMORY, LAMBDA_MIN_PORT, TEMPLATES, VM_JAVA_SERVERS, VM_JAVA_VERSIONS, VM_RUNTIMES
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,7 @@ TEMPLATE_FIELDS: dict[str, dict[str, dict[str, Any]]] = {
     "vm": {
         "runtime": {
             "type": "string",
-            "enum": ["python", "node", "java"],
+            "enum": VM_RUNTIMES,
             "description": "앱 언어. 의존성 파일(requirements.txt·pyproject.toml / package.json / pom.xml·build.gradle)로 정합니다.",
         },
         "app_port": {
@@ -99,13 +99,13 @@ TEMPLATE_FIELDS: dict[str, dict[str, dict[str, Any]]] = {
         },
         "runtime_version": {
             "type": "string",
-            "enum": ["17", "21"],
+            "enum": VM_JAVA_VERSIONS,
             "description": "Java 버전(pom.xml·build.gradle의 java 버전에 가까운 값). Java가 아니면 21입니다. "
             "Python·Node는 버전을 고를 수 없고 Ubuntu 기본 패키지를 씁니다.",
         },
         "java_server": {
             "type": "string",
-            "enum": ["none", "tomcat"],
+            "enum": VM_JAVA_SERVERS,
             "description": "Java 앱을 WAR로 Tomcat에 올릴 때만 tomcat입니다(pom.xml packaging이 war). 그 외에는 none입니다.",
         },
         "war_file": {
@@ -116,31 +116,8 @@ TEMPLATE_FIELDS: dict[str, dict[str, dict[str, Any]]] = {
 }
 
 
-def _vm_check(raw: dict[str, Any]) -> None:
-    """vm 값 검사. 배포 레포 scripts/vm_plan.py check_values와 같은 규칙이다(그쪽이 배포 전에 다시 검사한다)."""
-    for name, value in raw.items():
-        spec = TEMPLATE_FIELDS["vm"][name]
-        if "enum" in spec and value not in spec["enum"]:
-            raise ValueError(f"{name}는 {', '.join(spec['enum'])} 중 하나여야 합니다.")
-        if spec["type"] == "string" and not (isinstance(value, str) and "\n" not in value and len(value) <= 500):
-            raise ValueError(f"{name}는 500자 이하 한 줄 문자열이어야 합니다.")
-    port = raw.get("app_port", 8080)
-    if not (isinstance(port, int) and not isinstance(port, bool) and 1024 <= port <= 65535):
-        raise ValueError("app_port는 1024~65535 정수여야 합니다.")
-    if not PATH_RE.match(raw.get("health_check_path", "/")):
-        raise ValueError("health_check_path는 /로 시작하는 URL 경로여야 합니다.")
-
-
-def _check(compute: str, values: dict[str, Any]) -> None:
-    # catalog에서 준비되지 않은 컴퓨팅(vm)만 여기서 검사한다. catalog에서 ready가 켜지면 catalog 검사로 바뀐다
-    if is_ready(compute):
-        fill_values(compute, values)
-    else:
-        _vm_check(values)
-
-
 def fit_values(compute: str, raw: Any) -> dict[str, Any]:
-    """AI 값을 필드 순서대로 하나씩 넣어 보며 검사(catalog.fill_values, AWS 규칙 포함)를 통과하는 것만 남긴다.
+    """AI 값을 필드 순서대로 하나씩 넣어 보며 검사(catalog의 템플릿별 검사, AWS 규칙 포함)를 통과하는 것만 남긴다.
 
     틀린 값 하나 때문에 맞는 값(예: 포트)까지 기본값으로 돌아가지 않게 한다.
     돌려주는 값은 검사를 통과한 AI 값만이고 기본값은 채우지 않는다. 기본값은 구성안을 만들 때 채운다
@@ -152,7 +129,8 @@ def fit_values(compute: str, raw: Any) -> dict[str, Any]:
         if name not in raw:
             continue
         try:
-            _check(compute, {**kept, name: raw[name]})
+            # ready와 상관없이 검사한다. ready는 배포 가능 여부라 준비 전(vm)이어도 분석 값은 남긴다
+            TEMPLATES[compute].fill({**kept, name: raw[name]})
         except ValueError as e:
             logger.warning("템플릿 값을 버립니다 (%s.%s=%r): %s", compute, name, raw[name], e)
             continue
