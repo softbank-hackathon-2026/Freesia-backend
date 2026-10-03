@@ -45,6 +45,13 @@ class Settings(BaseSettings):
     workload_aws_access_key_id: str = ""
     workload_aws_secret_access_key: str = ""
     workload_aws_region: str = "ap-northeast-2"
+    # Sandbox 계정 키: Workload와 같은 용도(인프라 목록·모니터링 읽기)로 Sandbox 계정을 읽는다. 서버는 Parameter Store
+    # /sbh/platform/demo/backend/SANDBOX_AWS_* 값이 주입된다. 비어 있으면 Sandbox는 읽지 않는다
+    sandbox_aws_access_key_id: str = ""
+    sandbox_aws_secret_access_key: str = ""
+    sandbox_aws_region: str = "ap-northeast-2"
+    # 인프라의 계정 ID로 어느 키를 쓸지 고른다. 비밀값이 아니다 (배포 레포 plan.py ACCOUNTS와 같은 값)
+    sandbox_aws_account_id: str = "635738234799"
 
     @property
     def cors_origin_list(self) -> list[str]:

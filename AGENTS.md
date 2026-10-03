@@ -39,10 +39,10 @@ app/
   analysis.py      AI 분석 실행·저장 (백그라운드, 멈춤 방지). AI 호출은 ai/
   catalog.py       배포 템플릿 목록 (배포 레포 templates/와 이름·값 범위를 맞춘다, ready 스위치)
   signing.py       워크플로가 부르는 API의 서명 확인 (X-Hub-Signature-256)
-  aws.py           Workload 계정 boto3 클라이언트 (WORKLOAD_AWS_* 키, 읽기만)
-  infra_sync.py    인프라 갱신: InfraId 태그로 VPC·서브넷을 읽어 infra_spaces를 채움
+  aws.py           Workload·Sandbox 계정 boto3 클라이언트 (WORKLOAD_AWS_*·SANDBOX_AWS_* 키, 읽기만)
+  infra_sync.py    인프라 갱신: Workload·Sandbox 계정에서 InfraId 태그로 VPC·서브넷을 읽어 infra_spaces를 채움
   alb_rules.py     공용 ALB에서 앱을 나누는 경로·리스너 규칙 번호 (Multi-AZ 프론트·백엔드 배포, 템플릿 연결 전)
-  monitoring.py    배포된 앱의 지표·로그 조회 (Workload 계정 CloudWatch 읽기만, WORKLOAD_AWS_* 키)
+  monitoring.py    배포된 앱의 지표·로그 조회 (앱이 있는 계정의 CloudWatch 읽기만)
   github.py        GitHub 호출: 배포할 커밋 확인(토큰 없이), 배포 레포 워크플로 실행(workflow_dispatch)
   ai/              AI 분석: 저장소 읽기(repo.py), 모델 호출·검증(analyze.py). 담당 강효승
   models/          SQLAlchemy 모델 (repositories, infra_spaces, app_spaces, analyses, plans, deployments)
