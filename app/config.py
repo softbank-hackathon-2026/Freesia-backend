@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     onprem_cf_client_secret: str = ""
     onprem_pve_token_id: str = ""  # user@realm!토큰이름
     onprem_pve_token_secret: str = ""
+    # 배포 때 cloudflared로 들어갈 서비스 VM 호스트 (예: vpn.howon.me, https:// 없이). 읽은 온프레미스 인프라의 vm_host에 들어간다.
+    # 서버는 Parameter Store /sbh/platform/demo/backend/ONPREM_VM_HOST 값이 주입된다. 비어 있어도 인프라 목록은 읽지만 배포는 막힌다
+    onprem_vm_host: str = ""
 
     @property
     def cors_origin_list(self) -> list[str]:

@@ -165,9 +165,9 @@ TEMPLATES: dict[str, Template] = {
         cons=["서버 1대라 장애나 재배포 때 잠깐 멈춤", "재배포하면 주소가 바뀜"],
     ),
     # 10/3 온프레미스. Terraform이 아니라 배포 레포 deploy-vm.yml(Ansible)이 실행한다. 이름은 폴더가 아니라 구분용.
-    "vm": Template(
-        compute="vm",
-        name="vm",
+    "onprem": Template(
+        compute="onprem",
+        name="onprem",
         ready=True,
         fill=_vm_values,
         plan_name="기본형",

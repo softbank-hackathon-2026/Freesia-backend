@@ -20,7 +20,7 @@ def onprem():
     """Proxmox 출처가 붙기 전이라 온프레미스 인프라를 직접 넣는다."""
     with TestingSession() as db:
         db.add(models.InfraSpace(
-            id=ONPREM, provider="onprem", name="사내 서버", description="", network="public", computes=["vm"],
+            id=ONPREM, provider="onprem", name="사내 서버", description="", network="public", computes=["onprem"],
             status="ready", vm_host="vpn.howon.me", created_at=AT,
         ))
         db.commit()
@@ -30,18 +30,18 @@ def new_app(client, values=NODE):
     app_id = client.post("/api/app-spaces", json={
         "name": "shop-api", "repo_url": "https://github.com/softbank-hackathon-2026/shop-api", "infra_id": ONPREM,
     }).json()["id"]
-    if values is not None:  # AI 분석이 vm 값을 채운 것처럼
+    if values is not None:  # AI 분석이 onprem 값을 채운 것처럼
         with TestingSession() as db:
             db.add(models.Analysis(
                 id=f"an-{app_id[4:]}", app_space_id=app_id, infra_id=ONPREM, commit_sha="c" * 40, status="done",
-                result={"template_values": {"vm": values}}, model_id="test", created_at=AT, finished_at=AT,
+                result={"template_values": {"onprem": values}}, model_id="test", created_at=AT, finished_at=AT,
             ))
             db.commit()
     return app_id
 
 
 def deploy(client, app_id):
-    return client.post(f"/api/app-spaces/{app_id}/deployments", json={"compute": "vm"})
+    return client.post(f"/api/app-spaces/{app_id}/deployments", json={"compute": "onprem"})
 
 
 def workflow_plan(client, plan_id):
@@ -51,7 +51,7 @@ def workflow_plan(client, plan_id):
 
 def test_onprem_infra_offers_vm(client, onprem):
     infra = client.get(f"/api/infra-spaces/{ONPREM}").json()
-    assert (infra["provider"], infra["deployable_computes"]) == ("onprem", ["vm"])
+    assert (infra["provider"], infra["deployable_computes"]) == ("onprem", ["onprem"])
 
 
 def test_vm_deploy_runs_deploy_vm_workflow(client, real_mode, gh, onprem):
@@ -74,7 +74,7 @@ def test_vm_deploy_runs_deploy_vm_workflow(client, real_mode, gh, onprem):
 
 def test_vm_without_ai_values_cannot_plan(client, real_mode, gh, onprem):
     app_id = new_app(client, values=None)
-    r = client.post(f"/api/app-spaces/{app_id}/plans", json={"compute": "vm"})
+    r = client.post(f"/api/app-spaces/{app_id}/plans", json={"compute": "onprem"})
     assert (r.status_code, r.json()["error"]) == (400, "vm_values_missing")
     # 구성안 없이 배포하면 실행하지 않고 실패로 남긴다
     dep = deploy(client, app_id).json()
@@ -105,7 +105,7 @@ def test_aws_compute_not_offered_on_onprem(client, onprem):
 def test_vm_monitoring_is_unsupported(client, onprem):
     app_id = new_app(client)
     with TestingSession() as db:
-        db.add(models.Deployment(id="dep-vm1", app_space_id=app_id, compute="vm", status="success", step="done",
+        db.add(models.Deployment(id="dep-vm1", app_space_id=app_id, compute="onprem", status="success", step="done",
                                  run_id=1, created_at=AT))
         db.get(models.AppSpace, app_id).latest_deployment_id = "dep-vm1"
         db.commit()
@@ -117,11 +117,11 @@ def test_vm_monitoring_is_unsupported(client, onprem):
 
 
 def test_vm_values_defaults_and_missing():
-    v = catalog.fill_values("vm", {"runtime": "python", "start_command": ".venv/bin/python app.py", "application_id": "evil"})
+    v = catalog.fill_values("onprem", {"runtime": "python", "start_command": ".venv/bin/python app.py", "application_id": "evil"})
     assert (v["app_port"], v["health_check_path"], "application_id" in v) == (8080, "/", False)
     assert catalog.vm_missing(v) == []
-    assert catalog.vm_missing(catalog.fill_values("vm", {})) == ["runtime", "start_command"]
-    war = catalog.fill_values("vm", {"runtime": "java", "java_server": "tomcat", "runtime_version": "21"})
+    assert catalog.vm_missing(catalog.fill_values("onprem", {})) == ["runtime", "start_command"]
+    war = catalog.fill_values("onprem", {"runtime": "java", "java_server": "tomcat", "runtime_version": "21"})
     assert catalog.vm_missing(war) == []  # Tomcat WAR는 실행 명령이 없어도 된다
 
 
@@ -134,4 +134,4 @@ def test_vm_values_defaults_and_missing():
 ])
 def test_vm_values_rejected(values):
     with pytest.raises(ValueError):
-        catalog.fill_values("vm", values)
+        catalog.fill_values("onprem", values)

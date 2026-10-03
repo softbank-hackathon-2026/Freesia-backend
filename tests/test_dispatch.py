@@ -361,11 +361,11 @@ def test_cannot_delete_while_deploying(client, real_mode, gh):
 
 
 def test_vm_deploy_without_runtime_fails_instead_of_staying_pending(client, real_mode, gh):
-    """구성안 없이 vm을 배포했는데 분석이 언어·실행 명령을 못 찾았으면 워크플로를 부르지 않고 배포를 실패로 닫는다.
+    """구성안 없이 onprem을 배포했는데 분석이 언어·실행 명령을 못 찾았으면 워크플로를 부르지 않고 배포를 실패로 닫는다.
     pending으로 남으면 이 앱의 다음 배포가 deployment_in_progress로 계속 막힌다."""
     space = create_space(client).json()
     with TestingSession() as db:
-        dep = models.Deployment(id="dep-vm", app_space_id=space["id"], compute="vm", status="pending", step="queued",
+        dep = models.Deployment(id="dep-vm", app_space_id=space["id"], compute="onprem", status="pending", step="queued",
                                 created_at=datetime.now(timezone.utc))
         db.add(dep)
         db.commit()

@@ -66,6 +66,7 @@ class Found:
     alb: "SharedAlb | None" = None
     provider: str = "aws"
     space: dict | None = None  # 온프레미스: onprem.py가 만든 인프라 Space 값. 있으면 apply가 AWS 표·태그 대신 이 값을 그대로 저장한다
+    vm_host: str | None = None  # 온프레미스: 배포 때 cloudflared로 들어갈 서비스 VM 호스트 (ONPREM_VM_HOST). 비어 있으면 배포할 수 없다
 
 
 @dataclass(frozen=True)
@@ -157,7 +158,7 @@ def _onprem_configured() -> bool:
 
 
 def _read_onprem() -> list["Found"]:
-    """Proxmox에서 infra-deploy 태그가 붙은 VM을 읽는다. VM 하나가 인프라 하나다 (AWS 계정·VPC 값은 없다)."""
+    """Proxmox에서 freesia 태그가 붙은 VM을 읽는다. VM 하나가 인프라 하나다 (AWS 계정·VPC 값은 없다)."""
     s = get_settings()
     try:
         spaces = onprem.list_onprem_spaces(
@@ -170,7 +171,7 @@ def _read_onprem() -> list["Found"]:
         if not ID_PATTERN.match(space["id"]):
             logger.warning("이름 형식이 틀린 온프레미스 VM은 건너뜁니다: %r", space["id"])
             continue
-        result.append(Found(space["id"], "", "", "", {}, space=space))
+        result.append(Found(space["id"], "", "", "", {}, space=space, vm_host=s.onprem_vm_host.strip() or None))
     return result
 
 
@@ -316,6 +317,7 @@ def apply(db: Session, found: list[Found], read: list[Source]) -> None:
         row.aws_account_id, row.region, row.vpc_id = f.account_id or None, f.region or None, f.vpc_id or None
         row.public_subnet_ids, row.private_subnet_ids = f.public_subnet_ids, f.private_subnet_ids
         row.app_subnet_ids = f.app_subnet_ids
+        row.vm_host = f.vm_host
         row.alb_listener_arn = f.alb.listener_arn if f.alb else None
         row.alb_security_group_id = f.alb.security_group_id if f.alb else None
         row.alb_base_url = f.alb.base_url if f.alb else None

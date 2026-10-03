@@ -31,9 +31,9 @@ def to_infra_space(vm: dict, tags: dict[str, str]) -> dict:
         "description": "VM에 Ansible로 백엔드를 배포합니다",
         "network": "vm",
         "status": "ready",
-        "computes": ["vm"],
+        "computes": ["onprem"],
         "app_count": 0,
-        "deployable_computes": ["vm"],
+        "deployable_computes": ["onprem"],
     }
 
 

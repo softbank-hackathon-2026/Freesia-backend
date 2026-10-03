@@ -393,13 +393,13 @@ def _start_workflow(db: Session, space: models.AppSpace, dep: models.Deployment)
             "plan_id": dep.plan_id,
             "callback_url": f"{get_settings().public_api_base}/deployments/{dep.id}/callback",
         }
-        if dep.compute == "vm":
+        if dep.compute == "onprem":
             # 온프레미스는 Ansible 워크플로. 입력은 deploy.yml과 같고 compute만 없다 (10/3 박소정 님)
             inputs.pop("compute")
             github.dispatch("deploy-vm.yml", inputs)
         else:
             github.dispatch("deploy.yml", inputs)
-            _prefill_resources(db, dep)  # vm은 Terraform 템플릿이 없어 미리 채울 목록이 없다
+            _prefill_resources(db, dep)  # onprem은 Terraform 템플릿이 없어 미리 채울 목록이 없다
     except github.GitHubError as e:
         deploy.record_event(db, dep, "failed", dep.step, reason=str(e))
         db.commit()
@@ -541,7 +541,7 @@ def _new_plan(db: Session, space: models.AppSpace, compute: str) -> models.Plan:
     except ValueError:
         ai_values, values = None, catalog.fill_values(compute)
     # VM은 언어·실행 명령에 기본값이 없어서 분석이 찾지 못했으면 구성안을 만들 수 없다
-    if compute == "vm" and (missing := catalog.vm_missing(values)):
+    if compute == "onprem" and (missing := catalog.vm_missing(values)):
         raise HTTPException(400, detail={
             "error": "vm_values_missing",
             "message": f"분석에서 {', '.join(missing)}을(를) 찾지 못해 VM에 배포할 수 없습니다. 다시 분석해 주세요.",

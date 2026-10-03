@@ -83,24 +83,24 @@ def test_no_dockerfile_skips_model(repo_files, model):
 
 
 def test_vm_analyzes_without_dockerfile(repo_files, model):
-    """온프레미스 vm은 소스를 직접 빌드해서 Dockerfile이 없어도 모델을 부른다. 후보가 vm 하나라도 통과한다."""
+    """온프레미스 onprem은 소스를 직접 빌드해서 Dockerfile이 없어도 모델을 부른다. 후보가 onprem 하나라도 통과한다."""
     del repo_files["Dockerfile"]
     evidence = [{"file": "package.json", "finding": "Node 앱", "certain": True}]
-    prompts = model(output(evidence=evidence, candidates=[cand("vm", "selected", ["package.json"])], template_values={"vm": VM_GOOD}))
-    result, _ = run_analysis(URL, "main", ["vm"])
+    prompts = model(output(evidence=evidence, candidates=[cand("onprem", "selected", ["package.json"])], template_values={"onprem": VM_GOOD}))
+    result, _ = run_analysis(URL, "main", ["onprem"])
     assert (result.status, len(prompts)) == ("done", 1)
-    assert [c.compute for c in result.candidates] == ["vm"] and result.template_values["vm"] == VM_GOOD
+    assert [c.compute for c in result.candidates] == ["onprem"] and result.template_values["onprem"] == VM_GOOD
 
 
 @pytest.mark.parametrize("has_dockerfile,status", [(False, "done"), (True, "failed")])
 def test_mixed_computes_without_dockerfile(repo_files, model, has_dockerfile, status):
-    """vm과 컨테이너 방식이 섞인 인프라. Dockerfile이 없으면 vm만 배포할 수 있어 컨테이너 후보는 unsuitable이어도 된다.
+    """onprem과 컨테이너 방식이 섞인 인프라. Dockerfile이 없으면 onprem만 배포할 수 있어 컨테이너 후보는 unsuitable이어도 된다.
     Dockerfile이 있으면 지금처럼 unsuitable을 뺀 후보가 2개 이상이어야 한다."""
     if not has_dockerfile:
         del repo_files["Dockerfile"]
     evidence = [{"file": "package.json", "finding": "Node 앱", "certain": True}]
-    model(output(evidence=evidence, candidates=[cand("vm", "selected", ["package.json"]), cand("ecs-fargate", "unsuitable")]))
-    result, _ = run_analysis(URL, "main", ["vm", "ecs-fargate"])
+    model(output(evidence=evidence, candidates=[cand("onprem", "selected", ["package.json"]), cand("ecs-fargate", "unsuitable")]))
+    result, _ = run_analysis(URL, "main", ["onprem", "ecs-fargate"])
     assert result.status == status
 
 
@@ -169,7 +169,7 @@ def without(values, *names):
 
 
 def test_template_values_saved(repo_files, model):
-    values = {"ecs-fargate": GOOD, "lambda": LAMBDA_GOOD, "ec2": EC2_GOOD, "vm": VM_GOOD}
+    values = {"ecs-fargate": GOOD, "lambda": LAMBDA_GOOD, "ec2": EC2_GOOD, "onprem": VM_GOOD}
     model(output(template_values=values))
     result, _ = run_analysis(URL, "main", COMPUTES)
     assert result.template_values == values
@@ -187,13 +187,13 @@ def test_template_values_saved(repo_files, model):
         ("ecs-fargate", "모양이 틀림", {}),
         ("lambda", {**LAMBDA_GOOD, "container_port": 80}, without(LAMBDA_GOOD, "container_port")),  # Lambda는 1024 미만 포트를 못 연다
         ("ec2", {**EC2_GOOD, "instance_type": "t2.micro"}, without(EC2_GOOD, "instance_type")),  # 템플릿 밖 서버 크기
-        # vm은 배포 레포 vm_plan.py check_values 규칙
-        ("vm", {**VM_GOOD, "app_port": 80}, without(VM_GOOD, "app_port")),  # 일반 사용자라 1024 미만 포트를 못 연다
-        ("vm", {**VM_GOOD, "runtime": "ruby"}, without(VM_GOOD, "runtime")),
-        ("vm", {**VM_GOOD, "runtime_version": "11"}, without(VM_GOOD, "runtime_version")),
-        ("vm", {**VM_GOOD, "start_command": "npm start\nrm -rf /"}, without(VM_GOOD, "start_command")),  # 한 줄만
-        ("vm", {**VM_GOOD, "build_command": None}, without(VM_GOOD, "build_command")),
-        ("vm", {**VM_GOOD, "health_check_path": "health"}, without(VM_GOOD, "health_check_path")),
+        # onprem은 배포 레포 vm_plan.py check_values 규칙
+        ("onprem", {**VM_GOOD, "app_port": 80}, without(VM_GOOD, "app_port")),  # 일반 사용자라 1024 미만 포트를 못 연다
+        ("onprem", {**VM_GOOD, "runtime": "ruby"}, without(VM_GOOD, "runtime")),
+        ("onprem", {**VM_GOOD, "runtime_version": "11"}, without(VM_GOOD, "runtime_version")),
+        ("onprem", {**VM_GOOD, "start_command": "npm start\nrm -rf /"}, without(VM_GOOD, "start_command")),  # 한 줄만
+        ("onprem", {**VM_GOOD, "build_command": None}, without(VM_GOOD, "build_command")),
+        ("onprem", {**VM_GOOD, "health_check_path": "health"}, without(VM_GOOD, "health_check_path")),
     ],
 )
 def test_wrong_template_values_fall_back_per_field(repo_files, model, compute, given, expected):

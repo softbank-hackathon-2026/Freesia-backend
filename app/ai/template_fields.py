@@ -3,7 +3,7 @@
 컴퓨팅마다 배포 레포 workload-deploy의 templates/<이름>/variables.tf에서 "Filled per app"으로 표시된 변수와
 이름을 똑같이 쓴다. 여기에는 AI에게 물을 것(타입, 고를 수 있는 값, 설명)만 두고, 범위 검사와 기본값은
 app/catalog.py가 한다. 템플릿이 catalog에 등록된 뒤 여기에 추가한다.
-온프레미스 vm은 Terraform이 아니라 배포 레포 ansible/playbooks/deploy.yml이고, 값 이름·범위는 scripts/vm_plan.py
+온프레미스(onprem)는 Terraform이 아니라 배포 레포 ansible/playbooks/deploy.yml이고, 값 이름·범위는 scripts/vm_plan.py
 check_values를 따르고, 검사·기본값은 다른 컴퓨팅처럼 catalog(_vm_values)가 한다.
 필드 순서는 fit_values가 값을 넣어 보는 순서라, 다른 값에 따라 범위가 바뀌는 값(Fargate memory)을 뒤에 둔다.
 enum은 템플릿이 허용하는 값을 그대로 옮길 때만 건다. 범위를 AI 쪽에서 좁히지 않는다 (상한은 catalog·템플릿이 정한다).
@@ -72,12 +72,12 @@ TEMPLATE_FIELDS: dict[str, dict[str, dict[str, Any]]] = {
     },
     # 온프레미스 VM. Docker 없이 VM(Ubuntu)에 런타임을 apt로 설치하고 소스를 빌드해 systemd로 실행한다.
     # ponytail: env(앱 환경변수)는 뺐다. 열린 키 객체는 스키마 출력에서 막힐 수 있고 비밀값을 AI가 채우면 안 된다
-    "vm": {
+    "onprem": {
         "runtime": {
             "type": "string",
             "enum": VM_RUNTIMES,
             "description": "앱 언어. 의존성 파일(requirements.txt·pyproject.toml / package.json / pom.xml·build.gradle)로 정합니다. "
-            "이 셋이 아니거나 여러 프로세스가 함께 떠야 하는 앱은 vm에 맞지 않습니다(unsuitable).",
+            "이 셋이 아니거나 여러 프로세스가 함께 떠야 하는 앱은 onprem에 맞지 않습니다(unsuitable).",
         },
         "app_port": {
             "type": "integer",
@@ -133,7 +133,7 @@ def fit_values(compute: str, raw: Any) -> dict[str, Any]:
         if name not in raw:
             continue
         try:
-            # ready와 상관없이 검사한다. ready는 배포 가능 여부라 준비 전(vm)이어도 분석 값은 남긴다
+            # ready와 상관없이 검사한다. ready는 배포 가능 여부라 준비 전(onprem)이어도 분석 값은 남긴다
             TEMPLATES[compute].fill({**kept, name: raw[name]})
         except ValueError as e:
             logger.warning("템플릿 값을 버립니다 (%s.%s=%r): %s", compute, name, raw[name], e)

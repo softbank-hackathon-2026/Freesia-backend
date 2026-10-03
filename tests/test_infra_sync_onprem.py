@@ -27,6 +27,7 @@ def proxmox(monkeypatch):
         ("onprem_cf_client_secret", "cf-secret"),
         ("onprem_pve_token_id", "user@pve!tok"),
         ("onprem_pve_token_secret", "secret"),
+        ("onprem_vm_host", "vpn.test"),
     ):
         monkeypatch.setattr(settings, name, value)
     monkeypatch.setattr(infra_sync, "_read_aws", lambda account: [])
@@ -53,10 +54,19 @@ def test_freesia_vm_is_listed(client, proxmox, monkeypatch):
     assert set(got) == {"vm-codex"}  # freesia 태그가 없는 VM·컨테이너는 빠진다
     item = got["vm-codex"]
     assert (item["provider"], item["name"], item["network"], item["status"]) == ("onprem", "softbankservice", "vm", "ready")
-    assert item["computes"] == ["vm"] and item["deployable_computes"] == ["vm"] and item["app_count"] == 0
+    assert item["computes"] == ["onprem"] and item["deployable_computes"] == ["onprem"] and item["app_count"] == 0
     with TestingSession() as db:
         row = db.get(models.InfraSpace, "vm-codex")
         assert (row.aws_account_id, row.vpc_id, row.region) == (None, None, None)
+        assert row.vm_host == "vpn.test"  # ONPREM_VM_HOST가 vm_host로 들어간다
+
+
+def test_without_vm_host_it_is_listed_but_not_deployable(client, proxmox, monkeypatch):
+    monkeypatch.setattr(get_settings(), "onprem_vm_host", "")
+    item = listed(client, monkeypatch)["vm-codex"]
+    assert item["deployable_computes"] == []  # is_deployable이 vm_host 없는 온프레미스를 막는다
+    with TestingSession() as db:
+        assert db.get(models.InfraSpace, "vm-codex").vm_host is None
 
 
 def test_vm_without_displayname_uses_vm_name(client, proxmox, monkeypatch):

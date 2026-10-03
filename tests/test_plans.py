@@ -277,8 +277,8 @@ VM_DEFAULTS = {"runtime": None, "app_port": 8080, "health_check_path": "/", "bui
 
 
 def test_vm_defaults():
-    assert catalog.is_ready("vm")
-    assert catalog.fill_values("vm") == VM_DEFAULTS
+    assert catalog.is_ready("onprem")
+    assert catalog.fill_values("onprem") == VM_DEFAULTS
 
 
 @pytest.mark.parametrize(
@@ -296,7 +296,7 @@ def test_vm_defaults():
 )
 def test_vm_out_of_range(raw):
     with pytest.raises(ValueError):
-        catalog.fill_values("vm", raw)
+        catalog.fill_values("onprem", raw)
 
 
 @pytest.mark.parametrize(
@@ -322,5 +322,5 @@ def test_vm_plan_without_runtime_is_400(client):
 
     space = create_space(client).json()
     with TestingSession() as db, pytest.raises(HTTPException) as e:
-        app_spaces._new_plan(db, db.get(models.AppSpace, space["id"]), "vm")
+        app_spaces._new_plan(db, db.get(models.AppSpace, space["id"]), "onprem")
     assert (e.value.status_code, e.value.detail["error"]) == (400, "vm_values_missing")
