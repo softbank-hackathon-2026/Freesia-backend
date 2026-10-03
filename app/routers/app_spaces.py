@@ -7,7 +7,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import analysis, catalog, deploy, github, models, signing
+from app import alb_rules, analysis, catalog, deploy, github, models, signing
 from app.config import get_settings
 from app.db import get_db
 from app.ids import new_id, now
@@ -107,6 +107,11 @@ def create_app_space(body: AppSpaceCreate, db: Session = Depends(get_db)) -> mod
     infra = db.get(models.InfraSpace, body.infra_id)
     if infra is None or infra.status == "unavailable":
         raise HTTPException(400, detail={"error": "infra_not_found", "message": "없거나 사용할 수 없는 인프라입니다."})
+    if body.route_path is not None:
+        try:
+            alb_rules.check_route(db, body.infra_id, body.route_path)
+        except alb_rules.RouteConflict as e:
+            raise HTTPException(409, detail={"error": "route_path_taken", "message": str(e)}) from e
     repo = db.scalar(
         select(models.Repository).where(
             models.Repository.repo_url == body.repo_url, models.Repository.branch == body.branch
@@ -119,6 +124,7 @@ def create_app_space(body: AppSpaceCreate, db: Session = Depends(get_db)) -> mod
         repo_url=body.repo_url,
         branch=body.branch,
         infra_id=body.infra_id,
+        route_path=body.route_path,
         created_at=now(),
     )
     db.add(space)
@@ -281,6 +287,10 @@ def _start_workflow(db: Session, space: models.AppSpace, dep: models.Deployment)
     except github.GitHubError as e:
         deploy.record_event(db, dep, "failed", dep.step, reason=str(e))
         db.commit()
+    except alb_rules.RouteConflict as e:
+        db.rollback()
+        deploy.record_event(db, dep, "failed", dep.step, reason=str(e))
+        db.commit()
 
 
 @router.post(
@@ -365,7 +375,11 @@ def create_plan(app_space_id: str, body: PlanCreate, db: Session = Depends(get_d
     """
     space = find_app_space(db, app_space_id)
     check_compute(db.get(models.InfraSpace, space.infra_id), body.compute)
-    plan = _new_plan(db, space, body.compute)
+    try:
+        plan = _new_plan(db, space, body.compute)
+    except alb_rules.RouteConflict as e:
+        db.rollback()
+        raise HTTPException(409, detail={"error": "route_path_taken", "message": str(e)}) from e
     db.commit()
     return _plan_set(body.compute, [plan])
 
@@ -375,8 +389,11 @@ def _new_plan(db: Session, space: models.AppSpace, compute: str) -> models.Plan:
 
     포트는 AI가 확인하지 못했으면 비워 둔다. 배포 워크플로가 Dockerfile EXPOSE를 쓰고, 없으면 템플릿 기본값을 쓴다
     (배포 레포 scripts/plan.py). 기본값 80을 넣으면 EXPOSE 3000인 앱이 헬스체크에서 실패한다.
+
+    공용 ALB가 있는 인프라의 Fargate는 shared-alb 템플릿이다. 경로·규칙 번호를 정해 값에 넣고(app/alb_rules.py),
+    헬스체크 경로를 앱 경로 안으로 맞춘다. 경로가 겹치면 RouteConflict.
     """
-    template = catalog.TEMPLATES[compute]
+    template = catalog.template_for(compute, db.get(models.InfraSpace, space.infra_id))
     latest = analysis.latest(db, space.id)
     done = latest if latest is not None and latest.status == "done" else None
     ai_values = ((done.result or {}).get("template_values") or {}).get(compute) if done else None
@@ -386,6 +403,11 @@ def _new_plan(db: Session, space: models.AppSpace, compute: str) -> models.Plan:
         ai_values, values = None, catalog.fill_values(compute)
     if "container_port" not in (ai_values or {}):
         values.pop("container_port", None)
+    if template is catalog.SHARED_ALB:
+        route = alb_rules.ensure_route(db, space)
+        values["path_pattern"] = alb_rules.path_pattern(route)
+        values["rule_priority"] = alb_rules.assign_priority(db, space)
+        values["health_check_path"] = alb_rules.health_path_under(route, values["health_check_path"])
     plan = models.Plan(
         id=new_id("plan"),
         app_space_id=space.id,

@@ -54,16 +54,36 @@ AWS = {
 
 
 class FakeEC2:
+    """ec2·elbv2·acm 대신. workload_client가 서비스와 상관없이 이 객체를 돌려준다."""
+
     def __init__(self, vpcs):
         self.vpcs = vpcs
         self.calls = 0
+        self.lbs = []  # describe_load_balancers 결과
+        self.lb_tags = {}  # ARN → 태그
+        self.listeners = {}  # LB ARN → 리스너 목록
+        self.certs = {}  # 인증서 ARN → 도메인
+
+    def describe_tags(self, ResourceArns):
+        return {"TagDescriptions": [
+            {"ResourceArn": a, "Tags": [{"Key": k, "Value": v} for k, v in self.lb_tags.get(a, {}).items()]}
+            for a in ResourceArns
+        ]}
+
+    def describe_listeners(self, LoadBalancerArn):
+        return {"Listeners": self.listeners.get(LoadBalancerArn, [])}
+
+    def describe_certificate(self, CertificateArn):
+        return {"Certificate": {"DomainName": self.certs[CertificateArn]}}
 
     def get_paginator(self, method):
         fake = self
 
         class Pager:
-            def paginate(self, Filters):
+            def paginate(self, Filters=()):
                 fake.calls += 1
+                if method == "describe_load_balancers":
+                    return [{"LoadBalancers": fake.lbs}]
                 vpc_id = next((f["Values"][0] for f in Filters if f["Name"] == "vpc-id"), None)
                 if method == "describe_vpcs":
                     return [{"Vpcs": [
@@ -224,3 +244,50 @@ def test_list_keeps_db_when_aws_fails(client, aws, monkeypatch):
 
 def test_list_without_key_keeps_db(client):
     assert len(client.get("/api/infra-spaces").json()) == 3
+
+
+# 공용 ALB (Multi-AZ shared-alb)
+
+SHARED_LB = "arn:aws:elasticloadbalancing:ap-northeast-2:921810471078:loadbalancer/app/sbh-workload-demo-multiaz-alb/1"
+LISTENER = "arn:aws:elasticloadbalancing:ap-northeast-2:921810471078:listener/app/sbh-workload-demo-multiaz-alb/1/443"
+
+
+def add_shared_alb(aws, app_lb=True):
+    aws.lbs = [{"LoadBalancerArn": SHARED_LB, "VpcId": "vpc-ha", "Type": "application", "Scheme": "internet-facing",
+                "SecurityGroups": ["sg-alb"]}]
+    aws.lb_tags = {SHARED_LB: {"InfraId": MULTI_AZ}}
+    aws.listeners = {SHARED_LB: [
+        {"ListenerArn": "arn:listener/80", "Port": 80},
+        {"ListenerArn": LISTENER, "Port": 443, "Certificates": [{"CertificateArn": "arn:cert"}]},
+    ]}
+    aws.certs = {"arn:cert": "demo.howon.me"}
+    if app_lb:  # 같은 VPC에 basic 템플릿으로 만든 앱 ALB가 있어도 공용으로 보지 않는다
+        aws.lbs.append({"LoadBalancerArn": "arn:app-lb", "VpcId": "vpc-ha", "Type": "application",
+                        "Scheme": "internet-facing", "SecurityGroups": ["sg-app"]})
+        aws.lb_tags["arn:app-lb"] = {"InfraId": MULTI_AZ, "ApplicationId": "app-1"}
+    # db 서브넷도 프라이빗이라 앱 서브넷에서 빠지는지 본다
+    aws.vpcs["vpc-ha"] = {
+        **aws.vpcs["vpc-ha"],
+        "subnets": aws.vpcs["vpc-ha"]["subnets"] + [subnet("sn-db-a3", "a", "db_a")],
+        "tables": [table("rt-main3", True, main=True), table("rt-app", False, ["sn-app-a", "sn-app-c", "sn-db-a3"])],
+    }
+
+
+def test_sync_finds_shared_alb_and_app_subnets(client, aws):
+    add_shared_alb(aws)
+    sync(client)
+    with TestingSession() as db:
+        ha = db.get(models.InfraSpace, MULTI_AZ)
+        assert (ha.alb_listener_arn, ha.alb_security_group_id, ha.alb_base_url) == (LISTENER, "sg-alb", "https://demo.howon.me")
+        assert ha.app_subnet_ids == ["sn-app-a", "sn-app-c"]
+        assert "sn-db-a3" in ha.private_subnet_ids
+        pub = db.get(models.InfraSpace, PUBLIC)
+        assert pub.alb_listener_arn is None
+
+
+def test_no_shared_alb_without_https_listener(client, aws):
+    add_shared_alb(aws, app_lb=False)
+    aws.listeners[SHARED_LB] = [{"ListenerArn": "arn:listener/80", "Port": 80}]
+    sync(client)
+    with TestingSession() as db:
+        assert db.get(models.InfraSpace, MULTI_AZ).alb_listener_arn is None

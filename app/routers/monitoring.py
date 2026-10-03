@@ -11,7 +11,6 @@ router = APIRouter(prefix="/app-spaces", tags=["monitoring"])
 
 NOT_DEPLOYED = "지금 실제로 배포되어 있지 않은 앱입니다."
 UNSUPPORTED = "이 컴퓨팅은 아직 모니터링을 지원하지 않습니다."
-NO_EC2_LOGS = "EC2 앱 로그는 아직 CloudWatch로 모으지 않아 볼 수 없습니다."
 COMPUTES = ("ecs-fargate", "lambda", "ec2")
 
 
@@ -53,14 +52,15 @@ def get_metrics(app_space_id: str, db: Session = Depends(get_db)) -> AppMetrics:
 def get_logs(
     app_space_id: str, limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db)
 ) -> AppLogs:
-    """최근 7일에서 마지막 `limit`줄을 오래된 것부터 돌려줍니다."""
+    """최근 7일에서 마지막 `limit`줄을 오래된 것부터 돌려줍니다.
+
+    Fargate·Lambda·EC2 모두 있습니다. EC2는 지금 배포한 서버의 로그만 보여 줍니다 (재배포 전 서버 로그는 빠짐).
+    """
     live, status, message = _live(db, app_space_id)
     if live is None:
         return AppLogs(status=status, message=message)
-    if monitoring.log_group(app_space_id, live.compute) is None:
-        return AppLogs(status="unsupported", message=NO_EC2_LOGS)
     try:
-        lines = monitoring.get_logs(app_space_id, live.compute, limit)
+        lines = monitoring.get_logs(app_space_id, live.compute, live.id, limit)
     except monitoring.MonitoringError as e:
         return AppLogs(status="error", message=str(e))
     if not lines:

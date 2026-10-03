@@ -47,7 +47,7 @@ API 계약은 [백엔드 API 명세 (Notion)](https://app.notion.com/p/3ec8bee9a
 | 내리기 | `POST /api/app-spaces/{id}/teardown` | 🟠 | `destroy.yml` 실행. 실제 워크플로로 배포된 적 있어야 함 (`not_deployed`). 결과는 앱의 `teardown_status` |
 | 워크플로 전용 | `POST /api/deployments/{id}/callback` | 🟠 | 서버 준비 완료(서명 키 연결). 워크플로 실행 후 동작 |
 | | `GET /api/plans/{plan_id}` | 🟠 | 같음 |
-| 모니터링 | `GET /api/app-spaces/{id}/metrics`, `/logs` | 🟠 | 떠 있는 실제 배포의 지표와 최근 로그. Fargate: CPU·메모리·응답 시간·요청·5xx / Lambda: 처리 시간·호출·오류 / EC2: CPU만(로그 없음). 응답 칸은 같고 없는 값은 null. Workload 키로 CloudWatch 읽기만 |
+| 모니터링 | `GET /api/app-spaces/{id}/metrics`, `/logs` | 🟠 | 떠 있는 실제 배포의 지표와 최근 로그. Fargate: CPU·메모리·응답 시간·요청·5xx / Lambda: 처리 시간·호출·오류 / EC2: CPU·로그(현재 서버만). 응답 칸은 같고 없는 값은 null. Workload 키로 CloudWatch 읽기만 |
 | | `POST /api/app-spaces/{id}/teardown/callback` | 🟠 | 내리기 결과 (`success` / `failed` + `reason`). 같은 서명 |
 
 에러는 모두 `{"error": "코드", "message": "설명"}`입니다. 요청·응답 모양은 Swagger와 Notion 명세를 봐 주세요.
@@ -67,13 +67,14 @@ app/
   signing.py         워크플로가 부르는 API의 서명 확인
   aws.py             Workload 계정 boto3 클라이언트 (WORKLOAD_AWS_* 키, 읽기만)
   infra_sync.py      인프라 갱신: InfraId 태그로 VPC·서브넷을 읽어 infra_spaces를 채움
+  alb_rules.py       공용 ALB 경로·리스너 규칙 번호 (템플릿 연결 전)
   monitoring.py      배포된 앱의 지표·로그 조회 (Workload 계정 CloudWatch, 읽기만)
   github.py          GitHub 호출: 배포할 커밋 확인, 배포 레포 워크플로 실행 (workflow_dispatch)
   mock_data.py       샘플 분석 결과 (모델 연결 전)
   ai/                AI 분석 모듈 (강효승 님): 저장소 읽기 repo.py, 모델 호출·검증 analyze.py
   models/            SQLAlchemy 모델: repositories, infra_spaces, app_spaces, analyses, plans, deployments
   routers/           API: health, repositories, infra_spaces, app_spaces, deployments, plans
-alembic/versions/    마이그레이션 0001~0007
+alembic/versions/    마이그레이션 0001~0009
 tests/               pytest (SQLite 메모리 DB)
 .github/workflows/   ci.yml (PR·main 검사), deploy.yml (main 머지 시 배포)
 .aws/                task-definition.json (서버 환경변수·비밀값 연결)
