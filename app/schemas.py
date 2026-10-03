@@ -235,7 +235,7 @@ class LogLine(BaseModel):
 
 
 class AppLogs(BaseModel):
-    """앱 실행 로그 (API 명세 12절). 최근 1시간에서 마지막 limit줄, 오래된 것부터."""
+    """앱 실행 로그 (API 명세 12절). 최근 7일에서 마지막 limit줄, 오래된 것부터."""
 
     status: MonitoringStatus
     message: str | None = None

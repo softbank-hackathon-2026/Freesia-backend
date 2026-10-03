@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 PREFIX = "sbh-workload-demo"
 METRICS_WINDOW = timedelta(minutes=10)  # 이 안의 가장 최근 1분 값을 보여 준다
-LOGS_WINDOW = timedelta(hours=1)
+LOGS_WINDOW = timedelta(days=7)  # 배포 템플릿이 로그 그룹을 7일 보관한다 (retention_in_days = 7)
 CACHE_SECONDS = 15  # 화면이 몇 초마다 다시 불러도 CloudWatch를 매번 부르지 않게
 
 

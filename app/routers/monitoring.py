@@ -52,7 +52,7 @@ def get_metrics(app_space_id: str, db: Session = Depends(get_db)) -> AppMetrics:
 def get_logs(
     app_space_id: str, limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db)
 ) -> AppLogs:
-    """최근 1시간에서 마지막 `limit`줄을 오래된 것부터 돌려줍니다.
+    """최근 7일에서 마지막 `limit`줄을 오래된 것부터 돌려줍니다.
 
     Fargate·Lambda·EC2 모두 있습니다. EC2는 지금 배포한 서버의 로그만 보여 줍니다 (재배포 전 서버 로그는 빠짐).
     """
@@ -64,5 +64,5 @@ def get_logs(
     except monitoring.MonitoringError as e:
         return AppLogs(status="error", message=str(e))
     if not lines:
-        return AppLogs(status="waiting", message="최근 1시간 동안 로그가 없습니다.")
+        return AppLogs(status="waiting", message="최근 7일 동안 로그가 없습니다.")
     return AppLogs(status="ok", lines=lines)
