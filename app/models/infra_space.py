@@ -30,6 +30,8 @@ class InfraSpace(Base):
     alb_security_group_id: Mapped[str | None] = mapped_column(String(32))
     alb_base_url: Mapped[str | None] = mapped_column(String(200))  # 예: https://demo.howon.me (끝 / 없음)
     app_subnet_ids: Mapped[list[str] | None] = mapped_column(JSON)  # 앱을 둘 프라이빗 서브넷 (db 서브넷 제외)
+    # 온프레미스(provider=onprem)만: cloudflared로 들어갈 서비스 VM 호스트 (예: vpn.howon.me). 배포·내리기 워크플로에 넘긴다
+    vm_host: Mapped[str | None] = mapped_column(String(253))
     # VPC의 DefaultInfra=true 태그. 앱을 만들 때 인프라를 고르지 않으면 여기로 간다. 목록에는 보이지 않는다
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

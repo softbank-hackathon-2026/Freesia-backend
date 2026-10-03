@@ -383,20 +383,27 @@ def _start_workflow(db: Session, space: models.AppSpace, dep: models.Deployment)
             dep.plan_id = _new_plan(db, space, dep.compute).id
         db.commit()
         owner, repo = parse_github_url(space.repo_url)
-        github.dispatch(
-            "deploy.yml",
-            {
-                "deployment_id": dep.id,
-                "application_id": space.id,
-                "repo": f"{owner}/{repo}",
-                "commit_sha": dep.commit_sha,
-                "infra_id": space.infra_id,
-                "compute": dep.compute,
-                "plan_id": dep.plan_id,
-                "callback_url": f"{get_settings().public_api_base}/deployments/{dep.id}/callback",
-            },
-        )
-        _prefill_resources(db, dep)
+        inputs = {
+            "deployment_id": dep.id,
+            "application_id": space.id,
+            "repo": f"{owner}/{repo}",
+            "commit_sha": dep.commit_sha,
+            "infra_id": space.infra_id,
+            "compute": dep.compute,
+            "plan_id": dep.plan_id,
+            "callback_url": f"{get_settings().public_api_base}/deployments/{dep.id}/callback",
+        }
+        if dep.compute == "vm":
+            # 온프레미스는 Ansible 워크플로. 입력은 deploy.yml과 같고 compute만 없다 (10/3 박소정 님)
+            inputs.pop("compute")
+            github.dispatch("deploy-vm.yml", inputs)
+        else:
+            github.dispatch("deploy.yml", inputs)
+            _prefill_resources(db, dep)  # vm은 Terraform 템플릿이 없어 미리 채울 목록이 없다
+    except PlanUnavailable as e:
+        db.rollback()
+        deploy.record_event(db, dep, "failed", dep.step, reason=str(e))
+        db.commit()
     except github.GitHubError as e:
         deploy.record_event(db, dep, "failed", dep.step, reason=str(e))
         db.commit()
@@ -441,8 +448,15 @@ def teardown_app_space(app_space_id: str, db: Session = Depends(get_db)) -> Tear
     if not _real_deployments(db, space):
         raise HTTPException(409, detail={"error": "not_deployed", "message": "실제로 배포된 자원이 없습니다."})
     callback_url = f"{get_settings().public_api_base}/app-spaces/{space.id}/teardown/callback"
+    infra = db.get(models.InfraSpace, space.infra_id)
     try:
-        github.dispatch("destroy.yml", {"application_id": space.id, "confirm": space.id, "callback_url": callback_url})
+        if infra is not None and infra.provider == "onprem":
+            # 온프레미스는 Terraform 상태가 없어서 VM 주소를 같이 넘긴다 (배포 레포 destroy-vm.yml)
+            github.dispatch("destroy-vm.yml", {
+                "application_id": space.id, "confirm": space.id, "vm_host": infra.vm_host or "", "callback_url": callback_url,
+            })
+        else:
+            github.dispatch("destroy.yml", {"application_id": space.id, "confirm": space.id, "callback_url": callback_url})
     except github.GitHubError as e:
         raise HTTPException(502, detail={"error": "teardown_failed", "message": str(e)}) from e
     space.teardown_status = "requested"
@@ -505,8 +519,15 @@ def create_plan(app_space_id: str, body: PlanCreate, db: Session = Depends(get_d
     except alb_rules.RouteConflict as e:
         db.rollback()
         raise HTTPException(409, detail={"error": "route_path_taken", "message": str(e)}) from e
+    except PlanUnavailable as e:
+        db.rollback()
+        raise HTTPException(400, detail={"error": "plan_values_missing", "message": str(e)}) from e
     db.commit()
     return _plan_set(body.compute, [plan])
+
+
+class PlanUnavailable(Exception):
+    """구성안 값을 채울 수 없음 (vm인데 AI 값이 없음). 메시지는 화면에 그대로 보여 줄 수 있다."""
 
 
 def _new_plan(db: Session, space: models.AppSpace, compute: str) -> models.Plan:
@@ -525,7 +546,10 @@ def _new_plan(db: Session, space: models.AppSpace, compute: str) -> models.Plan:
     try:
         values = catalog.fill_values(compute, ai_values)
     except ValueError:
-        ai_values, values = None, catalog.fill_values(compute)
+        try:
+            ai_values, values = None, catalog.fill_values(compute)
+        except ValueError as e:  # vm은 runtime·실행 명령에 기본값이 없어 AI 값이 있어야 한다
+            raise PlanUnavailable("AI 분석 값이 없어 구성안을 만들 수 없습니다. 먼저 분석해 주세요.") from e
     if "container_port" not in (ai_values or {}):
         values.pop("container_port", None)
     if template is catalog.SHARED_ALB:

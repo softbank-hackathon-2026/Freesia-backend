@@ -72,6 +72,58 @@ def _ec2_values(raw: dict[str, Any]) -> dict[str, Any]:
     return {"container_port": _port(raw, 80), "instance_type": instance_type, "health_check_path": _path(raw)}
 
 
+# 온프레미스 VM (배포 레포 ansible/README.md, scripts/vm_plan.py check_values와 같게 맞춘다. 10/3 박소정 님)
+VM_RUNTIMES = ["python", "node", "java"]
+VM_JAVA_VERSIONS = ["17", "21"]  # Python·Node는 VM에 있는 버전을 쓴다
+VM_TOMCAT_VERSIONS = ["10"]
+VM_ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]{0,63}$")
+VM_DEFAULTS = {
+    "runtime_version": "21",
+    "app_port": 8080,
+    "health_check_path": "/",
+    "build_command": "",
+    "start_command": "",
+    "java_server": "none",
+    "tomcat_version": "10",
+    "war_file": "target/*.war",
+}
+
+
+def _one_line(name: str, value: Any) -> str:
+    if not isinstance(value, str) or "\n" in value or len(value) > 500:
+        raise ValueError(f"{name}는 500자 이하 한 줄 문자열이어야 합니다.")
+    return value
+
+
+def _vm_values(raw: dict[str, Any]) -> dict[str, Any]:
+    """values.yaml. 기본값이 없는 runtime과 start_command(Tomcat WAR 제외)는 AI가 채워야 한다."""
+    v = {**VM_DEFAULTS, **{k: raw[k] for k in [*VM_DEFAULTS, "runtime", "env"] if k in raw}}
+    if v.get("runtime") not in VM_RUNTIMES:
+        raise ValueError(f"runtime은 {', '.join(VM_RUNTIMES)} 중 하나여야 합니다.")
+    v["app_port"] = _int_in(v, "app_port", 8080, 1024, 65535)  # 앱은 일반 사용자로 실행된다
+    v["health_check_path"] = _path(v)
+    for name in ("build_command", "start_command", "war_file"):
+        _one_line(name, v[name])
+    v["runtime_version"], v["tomcat_version"] = str(v["runtime_version"]), str(v["tomcat_version"])
+    tomcat = v["runtime"] == "java" and v["java_server"] == "tomcat"
+    if v["runtime"] == "java":
+        if v["runtime_version"] not in VM_JAVA_VERSIONS:
+            raise ValueError(f"java runtime_version은 {', '.join(VM_JAVA_VERSIONS)} 중 하나여야 합니다.")
+        if v["java_server"] not in ("none", "tomcat"):
+            raise ValueError("java_server는 none 또는 tomcat이어야 합니다.")
+        if tomcat and v["tomcat_version"] not in VM_TOMCAT_VERSIONS:
+            raise ValueError(f"tomcat_version은 {', '.join(VM_TOMCAT_VERSIONS)}만 됩니다.")
+    if not tomcat and not v["start_command"]:
+        raise ValueError("start_command가 필요합니다(Tomcat에 올리는 WAR만 생략할 수 있습니다).")
+    env = v.get("env", {})
+    if not isinstance(env, dict) or not all(
+        VM_ENV_NAME_RE.match(str(k)) and isinstance(x, str) and "\n" not in x and '"' not in x for k, x in env.items()
+    ):
+        raise ValueError("env는 대문자 이름과 한 줄 문자열 값이어야 합니다(따옴표 불가).")
+    v["env"] = env
+    return v
+
+
 @dataclass(frozen=True)
 class Template:
     compute: str
@@ -106,6 +158,17 @@ TEMPLATES: dict[str, Template] = {
         summary="컨테이너 이미지를 Lambda로 실행하고 함수 주소(function URL)로 바로 공개하는 구성",
         pros=["요청이 없으면 비용이 거의 없음", "서버·로드밸런서 관리 없음"],
         cons=["오래 쉬다 첫 요청이 오면 느림(콜드 스타트)", "앱이 1024 이상 포트를 써야 함"],
+    ),
+    # 10/3 박소정 님. Terraform 템플릿이 아니라 배포 레포 ansible/playbooks (deploy-vm.yml). 이름은 구성안 표시용
+    "vm": Template(
+        compute="vm",
+        name="vm/ansible",
+        ready=True,
+        fill=_vm_values,
+        plan_name="VM 설치형",
+        summary="온프레미스 서비스 VM에 Ansible로 실행 환경을 맞추고 코드를 그대로 올려 실행하는 구성",
+        pros=["인터넷에 공개하지 않는 사내 서버에 배포", "Dockerfile 없이 코드를 그대로 실행", "정해 둔 실행 환경을 매번 똑같이 맞춤"],
+        cons=["VM 한 대라 장애나 재배포 때 잠깐 멈춤", "지표·로그 모니터링은 아직 없음"],
     ),
     "ec2": Template(
         compute="ec2",

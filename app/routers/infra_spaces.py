@@ -13,8 +13,12 @@ INFRA_NOT_FOUND = {"error": "infra_not_found", "message": "인프라를 찾을 �
 
 
 def is_deployable(infra: models.InfraSpace) -> bool:
-    """배포 워크플로에 넘길 VPC와 서로 다른 AZ의 퍼블릭 서브넷 2개가 있는지."""
-    return infra.status == "ready" and bool(infra.vpc_id) and len(infra.public_subnet_ids or []) >= 2
+    """배포 워크플로에 넘길 값이 있는지. AWS: VPC와 서로 다른 AZ의 퍼블릭 서브넷 2개. 온프레미스: 서비스 VM 호스트."""
+    if infra.status != "ready":
+        return False
+    if infra.provider == "onprem":
+        return bool(infra.vm_host)
+    return bool(infra.vpc_id) and len(infra.public_subnet_ids or []) >= 2
 
 
 def _to_schema(infra: models.InfraSpace, app_count: int) -> InfraSpace:
