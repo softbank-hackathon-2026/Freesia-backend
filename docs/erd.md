@@ -118,6 +118,7 @@ erDiagram
         varchar state "pending / in_progress / done / failed / deleted"
         varchar reason
         timestamptz updated_at
+        boolean predicted "배포 시작 때 템플릿으로 미리 넣은 자원"
     }
 ```
 
@@ -263,6 +264,9 @@ erDiagram
 | `state` | varchar(20) | | O | `pending` / `in_progress` / `done` / `failed`. 내리기에 성공하면 그 앱의 자원은 `deleted` |
 | `reason` | varchar(1000) | | | 실패했을 때만 |
 | `updated_at` | timestamptz | | O | |
+| `predicted` | boolean | | O | 배포 시작 때 템플릿으로 미리 넣은 자원이면 true (마이그레이션 0010). 워크플로가 같은 주소를 보고하면 false |
 
+- 배포를 시작하면(워크플로 실행 성공 직후) 배포 레포 `templates/<템플릿>/*.tf`의 `resource` 블록을 읽어 `pending`으로 미리 넣는다. 원래 트리는 deploy 단계(빌드 1~2분 뒤)에야 채워졌다. 템플릿은 10분 캐시하고, 못 읽으면 미리 넣지 않는다.
+- 자원 여러 개가 한 번에 오는 콜백(Terraform 계획 전체)을 받으면 계획에 없는 예상 자원을 지운다. 배포가 끝날 때(성공·실패)도 남은 예상 자원을 지운다. 빌드에서 실패하면 트리가 비워진다.
 - 같은 `action`에서 상태가 뒤로 가는 보고(`done` 뒤의 `in_progress`)는 무시한다. `replace`처럼 `action`이 바뀌면 새 작업이라 받는다.
 - 조회용 자원(`data.` 주소, `action=read`)은 트리에 넣지 않는다.

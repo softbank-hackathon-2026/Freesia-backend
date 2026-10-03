@@ -1,4 +1,5 @@
 """앱 Space. 로그인 없이 모두가 보는 공용 목록이다."""
+import logging
 from datetime import timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Response, status
@@ -27,6 +28,7 @@ from app.schemas import (
 from app.routers.deployments import _raw_body
 from app.routers.infra_spaces import is_deployable
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/app-spaces", tags=["app-spaces"])
 
 # 내리기 콜백이 이 시간 안에 오지 않으면 다시 요청할 수 있다 (Destroy 워크플로 제한 시간 20분 + 대기열)
@@ -284,6 +286,7 @@ def _start_workflow(db: Session, space: models.AppSpace, dep: models.Deployment)
                 "callback_url": f"{get_settings().public_api_base}/deployments/{dep.id}/callback",
             },
         )
+        _prefill_resources(db, dep)
     except github.GitHubError as e:
         deploy.record_event(db, dep, "failed", dep.step, reason=str(e))
         db.commit()
@@ -291,6 +294,18 @@ def _start_workflow(db: Session, space: models.AppSpace, dep: models.Deployment)
         db.rollback()
         deploy.record_event(db, dep, "failed", dep.step, reason=str(e))
         db.commit()
+
+
+def _prefill_resources(db: Session, dep: models.Deployment) -> None:
+    """트리가 배포 시작부터 보이게 템플릿 자원을 미리 넣는다. 템플릿을 못 읽으면 넘어간다 (계획이 오면 그때 채워진다)."""
+    template = db.get(models.Plan, dep.plan_id).template
+    try:
+        resources = github.template_resources(template)
+    except github.GitHubError as e:
+        logger.warning("템플릿 자원 목록을 못 읽어 트리를 미리 채우지 않음: %s (%s)", template, e)
+        return
+    deploy.prefill_resources(db, dep, resources)
+    db.commit()
 
 
 @router.post(

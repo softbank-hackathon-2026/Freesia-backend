@@ -2,7 +2,7 @@
 import time
 from datetime import datetime
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from app import db as db_module
@@ -108,7 +108,33 @@ def upsert_resources(db: Session, dep: models.Deployment, resources: list[Callba
             continue
         row.type, row.action, row.state = item.type, item.action, item.state
         row.reason = _cut(item.reason, 1000) if item.state == "failed" else None
+        row.predicted = False
         row.updated_at = now()
+
+
+def prefill_resources(db: Session, dep: models.Deployment, resources: list[tuple[str, str]]) -> None:
+    """배포 시작 때 템플릿의 자원을 "대기"로 미리 넣는다. 트리는 원래 deploy 단계(빌드 1~2분 뒤)에야 왔다.
+
+    워크플로가 계획(plan)을 보내면 같은 주소는 그 값으로 바뀌고, 계획에 없는 주소는 drop_predicted로 지운다.
+    """
+    for position, (rtype, address) in enumerate(resources):
+        db.add(
+            models.DeploymentResource(
+                deployment_id=dep.id, address=address, position=position, type=rtype,
+                action="create", state="pending", predicted=True, updated_at=now(),
+            )
+        )
+
+
+def drop_predicted(db: Session, dep: models.Deployment) -> None:
+    """워크플로가 보고하지 않은 예상 자원을 지운다. 계획이 왔을 때(계획에 없음)와 배포가 끝났을 때 부른다."""
+    # 방금 보고로 predicted=False가 된 행을 먼저 DB에 써야 지우지 않는다 (세션 autoflush가 꺼져 있어도 맞게)
+    db.flush()
+    db.execute(
+        delete(models.DeploymentResource).where(
+            models.DeploymentResource.deployment_id == dep.id, models.DeploymentResource.predicted.is_(True)
+        )
+    )
 
 
 def mark_resources_deleted(db: Session, app_space_id: str, before: datetime) -> None:

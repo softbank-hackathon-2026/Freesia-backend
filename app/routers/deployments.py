@@ -150,5 +150,11 @@ def deployment_callback(
     deploy.record_event(db, dep, cb.status, cb.step, message=cb.message, url=cb.url, reason=cb.reason)
     if cb.resources:
         deploy.upsert_resources(db, dep, cb.resources)
+        # 자원 여러 개가 한 번에 오면 Terraform 계획 전체다 (apply 중에는 하나씩 온다). 계획에 없는 예상 자원은 지운다
+        if len(cb.resources) > 1:
+            deploy.drop_predicted(db, dep)
+    if cb.status in deploy.FINISHED:
+        # 빌드에서 실패해 계획이 안 왔거나, 계획 콜백이 유실된 경우 남은 예상 자원을 정리한다
+        deploy.drop_predicted(db, dep)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
