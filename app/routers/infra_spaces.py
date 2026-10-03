@@ -51,7 +51,8 @@ def _list(db: Session) -> list[InfraSpace]:
     counts = _app_counts(db)
     infras = db.scalars(
         select(models.InfraSpace)
-        .where(models.InfraSpace.status != "unavailable")
+        # 기본 인프라는 "인프라 선택 안 함"으로만 쓴다 (10/3 합의). 상세 조회는 된다
+        .where(models.InfraSpace.status != "unavailable", models.InfraSpace.is_default.is_(False))
         .order_by(models.InfraSpace.created_at, models.InfraSpace.id)
     )
     return [_to_schema(i, counts.get(i.id, 0)) for i in infras]

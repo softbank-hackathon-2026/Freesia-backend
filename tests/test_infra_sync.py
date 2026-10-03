@@ -361,3 +361,59 @@ def test_vanished_sandbox_infra_is_hidden(client, aws, sandbox):
     infra_sync._next_run = 0.0
     assert SANDBOX_INFRA not in {i["id"] for i in sync(client).json() if i["status"] != "unavailable"}
     assert infra_row(SANDBOX_INFRA).status == "unavailable"
+
+
+# 기본 인프라 (DefaultInfra 태그): 인프라를 고르지 않은 앱이 간다. 목록에는 안 보인다
+
+
+def make_default(sandbox):
+    sandbox.vpcs["vpc-sb"]["tags"] = {"InfraId": SANDBOX_INFRA, "DefaultInfra": "true"}
+
+
+def new_app(client, **body):
+    return client.post("/api/app-spaces", json={"name": "todo", "repo_url": "https://github.com/org/todo", **body})
+
+
+def test_default_infra_hidden_from_list_but_readable(client, sandbox):
+    make_default(sandbox)
+    ids = {i["id"] for i in sync(client).json()}
+    assert SANDBOX_INFRA not in ids and PUBLIC in ids
+    assert SANDBOX_INFRA not in {i["id"] for i in client.get("/api/infra-spaces").json()}
+    assert client.get(f"/api/infra-spaces/{SANDBOX_INFRA}").json()["status"] == "ready"
+
+
+def test_app_without_infra_goes_to_default(client, sandbox):
+    make_default(sandbox)
+    sync(client)
+    r = new_app(client)
+    assert r.status_code == 201
+    assert r.json()["infra_id"] == SANDBOX_INFRA
+    # 직접 고르면 그대로
+    assert new_app(client, infra_id=PUBLIC).json()["infra_id"] == PUBLIC
+
+
+def test_app_without_infra_reads_aws_if_needed(client, sandbox):
+    make_default(sandbox)  # 아직 갱신 전: 앱 만들 때 한 번 읽어 온다
+    assert new_app(client).json()["infra_id"] == SANDBOX_INFRA
+
+
+def test_no_default_infra(client, aws):
+    sync(client)
+    r = new_app(client)
+    assert r.status_code == 400
+    assert r.json()["error"] == "no_default_infra"
+
+
+def test_two_default_infras_means_none(client, aws, sandbox):
+    make_default(sandbox)
+    aws.vpcs["vpc-pub"]["tags"] = {"InfraId": PUBLIC, "DefaultInfra": "true"}
+    sync(client)
+    assert new_app(client).json()["error"] == "no_default_infra"
+
+
+def test_removing_tag_unhides_infra(client, sandbox):
+    make_default(sandbox)
+    sync(client)
+    sandbox.vpcs["vpc-sb"]["tags"] = {"InfraId": SANDBOX_INFRA}
+    infra_sync._next_run = 0.0
+    assert SANDBOX_INFRA in {i["id"] for i in sync(client).json()}

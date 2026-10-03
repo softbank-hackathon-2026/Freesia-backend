@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import alb_rules, analysis, catalog, deploy, github, models, signing
+from app import alb_rules, analysis, catalog, deploy, github, infra_sync, models, signing
 from app.config import get_settings
 from app.db import get_db
 from app.ids import new_id, now
@@ -118,12 +118,21 @@ def create_app_space(body: AppSpaceCreate, db: Session = Depends(get_db)) -> mod
     명세 6절은 등록된 저장소만 받기로 했지만, 프론트 통합 화면이 아직 저장소 API에 연결되지 않아
     당분간 등록되지 않은 저장소도 받는다(repository_id가 비어 있음). 연결되면 400 repository_not_registered로 막는다.
     """
-    infra = db.get(models.InfraSpace, body.infra_id)
+    if body.infra_id is None:
+        # 인프라를 고르지 않으면 기본 인프라(DefaultInfra 태그). 아직 못 읽었을 수 있어 한 번 갱신해 본다
+        infra = infra_sync.default_infra(db)
+        if infra is None:
+            infra_sync.refresh(db)
+            infra = infra_sync.default_infra(db)
+        if infra is None:
+            raise HTTPException(400, detail={"error": "no_default_infra", "message": "기본 인프라가 없습니다. 인프라를 골라 주세요."})
+    else:
+        infra = db.get(models.InfraSpace, body.infra_id)
     if infra is None or infra.status == "unavailable":
         raise HTTPException(400, detail={"error": "infra_not_found", "message": "없거나 사용할 수 없는 인프라입니다."})
     if body.route_path is not None:
         try:
-            alb_rules.check_route(db, body.infra_id, body.route_path)
+            alb_rules.check_route(db, infra.id, body.route_path)
         except alb_rules.RouteConflict as e:
             raise HTTPException(409, detail={"error": "route_path_taken", "message": str(e)}) from e
     repo = db.scalar(
@@ -137,7 +146,7 @@ def create_app_space(body: AppSpaceCreate, db: Session = Depends(get_db)) -> mod
         repository_id=repo.id if repo else None,
         repo_url=body.repo_url,
         branch=body.branch,
-        infra_id=body.infra_id,
+        infra_id=infra.id,
         route_path=body.route_path,
         created_at=now(),
     )

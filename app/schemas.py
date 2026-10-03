@@ -97,7 +97,11 @@ class AppSpaceCreate(BaseModel):
         examples=["https://github.com/softbank-hackathon-2026/sample-app"]
     )
     branch: Annotated[str, AfterValidator(normalize_branch)] = Field("main", min_length=1, max_length=255)
-    infra_id: str = Field(examples=["sbh-workload-demo-vpc-public01"])
+    infra_id: str | None = Field(
+        None,
+        examples=["sbh-workload-demo-vpc-public01"],
+        description="비우면 기본 인프라(VPC 태그 DefaultInfra=true). 기본 인프라가 없으면 400 no_default_infra",
+    )
     route_path: str | None = Field(
         None,
         pattern=r"^/(?:[a-z0-9-]+(?:/[a-z0-9-]+)*)?$",

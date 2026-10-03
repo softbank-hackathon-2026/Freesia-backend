@@ -22,6 +22,7 @@ from app.ids import now
 logger = logging.getLogger(__name__)
 
 TAG = "InfraId"
+DEFAULT_TAG = "DefaultInfra"  # true인 VPC 한 곳이 "인프라 선택 안 함"일 때 쓰는 기본 인프라 (10/3 합의)
 ID_PATTERN = re.compile(r"^[a-z0-9-]{1,64}$")  # ADR-005 ID 규칙
 COOLDOWN_SECONDS = 5  # 한 화면이 거의 동시에 여러 번 불러도 AWS는 한 번만 읽는다
 RETRY_AFTER_FAILURE_SECONDS = 60  # AWS가 안 되면 목록 조회마다 기다리지 않게 잠시 쉰다
@@ -246,6 +247,7 @@ def apply(db: Session, found: list[Found], read: list[str] = (aws.WORKLOAD,)) ->
         row.alb_listener_arn = f.alb.listener_arn if f.alb else None
         row.alb_security_group_id = f.alb.security_group_id if f.alb else None
         row.alb_base_url = f.alb.base_url if f.alb else None
+        row.is_default = f.tags.get(DEFAULT_TAG, "").strip().lower() == "true"
         # 로드밸런서는 서로 다른 AZ의 퍼블릭 서브넷 2개 이상이 있어야 만들 수 있다
         row.status = "ready" if len(f.public_subnet_ids) >= 2 else "preparing"
     for row in db.scalars(select(models.InfraSpace).where(models.InfraSpace.id.not_in(seen))):
@@ -270,3 +272,13 @@ def _guess_network(f: Found) -> str:
     if not f.private_subnet_ids:
         return "public"
     return "db-isolated"
+
+
+def default_infra(db: Session) -> "models.InfraSpace | None":
+    """기본 인프라. DefaultInfra=true인 인프라가 딱 하나일 때만 돌려준다 (없거나 여럿이면 None, 엉뚱한 곳 배포 방지)."""
+    rows = list(db.scalars(
+        select(models.InfraSpace).where(models.InfraSpace.is_default.is_(True), models.InfraSpace.status != "unavailable")
+    ))
+    if len(rows) > 1:
+        logger.warning("DefaultInfra 태그가 여러 인프라에 있어 기본 인프라를 쓰지 않습니다: %s", [r.id for r in rows])
+    return rows[0] if len(rows) == 1 else None

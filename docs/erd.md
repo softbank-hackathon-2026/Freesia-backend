@@ -28,6 +28,7 @@ erDiagram
         json public_subnet_ids
         json private_subnet_ids
         json app_subnet_ids
+        boolean is_default "DefaultInfra 태그. 인프라 선택 안 함일 때"
         varchar alb_listener_arn
         varchar alb_security_group_id
         varchar alb_base_url
