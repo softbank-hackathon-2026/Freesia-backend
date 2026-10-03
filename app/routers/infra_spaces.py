@@ -18,6 +18,12 @@ def is_deployable(infra: models.InfraSpace) -> bool:
 
 
 def _to_schema(infra: models.InfraSpace, app_count: int) -> InfraSpace:
+    if infra.provider == "onprem":
+        deployable_computes = list(infra.computes)  # 온프레미스는 VM 하나가 곧 올릴 곳이라 템플릿 표를 거치지 않는다
+    elif is_deployable(infra):
+        deployable_computes = [c for c in infra.computes if catalog.is_ready(c)]
+    else:
+        deployable_computes = []
     # 계정 ID·VPC·서브넷은 배포용 내부 값이라 응답에 넣지 않는다 (API 명세 4절)
     return InfraSpace(
         id=infra.id,
@@ -28,7 +34,7 @@ def _to_schema(infra: models.InfraSpace, app_count: int) -> InfraSpace:
         status=infra.status,
         computes=infra.computes,
         app_count=app_count,
-        deployable_computes=[c for c in infra.computes if catalog.is_ready(c)] if is_deployable(infra) else [],
+        deployable_computes=deployable_computes,
     )
 
 

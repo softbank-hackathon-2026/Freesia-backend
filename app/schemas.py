@@ -56,12 +56,12 @@ class InfraSpace(BaseModel):
 
     id: str = Field(examples=["sbh-workload-demo-vpc-public01"])
     provider: Literal["aws", "onprem", "gcp", "azure"] = Field(
-        "aws", description="어디서 읽어 온 인프라인지. 지금은 aws만 나온다 (onprem·gcp·azure는 그쪽을 읽게 되면)"
+        "aws", description="어디서 읽어 온 인프라인지. 지금은 aws와 onprem이 나온다 (gcp·azure는 그쪽을 읽게 되면)"
     )
     name: str = Field(examples=["공개 웹 서비스용"])
     description: str
-    network: Literal["public", "db-isolated", "multi-az", "private", "ha"] = Field(
-        description="public / db-isolated / multi-az. private·ha는 예전 임시 값"
+    network: Literal["public", "db-isolated", "multi-az", "vm", "private", "ha"] = Field(
+        description="public / db-isolated / multi-az, 온프레미스 VM은 vm. private·ha는 예전 임시 값"
     )
     status: Literal["ready", "preparing", "unavailable"] = Field(
         "ready", description="ready: 배포 가능, preparing: 앱용 퍼블릭 서브넷이 부족함, unavailable: AWS에서 사라짐(목록에 안 나옴)"

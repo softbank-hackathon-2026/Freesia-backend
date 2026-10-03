@@ -53,6 +53,14 @@ class Settings(BaseSettings):
     # 인프라의 계정 ID로 어느 키를 쓸지 고른다. 비밀값이 아니다 (배포 레포 plan.py ACCOUNTS와 같은 값)
     sandbox_aws_account_id: str = "635738234799"
 
+    # 온프레미스(Proxmox) 인프라 조회. cloudflared 터널 뒤의 Proxmox API를 Cloudflare Access(Service Token)를 거쳐 읽기만 한다.
+    # 서버는 Parameter Store /sbh/platform/demo/backend/ONPREM_* 값이 주입된다. 5개가 다 있어야 읽고, 하나라도 비면 온프레미스는 읽지 않는다
+    onprem_api_url: str = ""  # https:// 를 포함한 Proxmox API 주소 (Cloudflare에 등록한 호스트명)
+    onprem_cf_client_id: str = ""
+    onprem_cf_client_secret: str = ""
+    onprem_pve_token_id: str = ""  # user@realm!토큰이름
+    onprem_pve_token_secret: str = ""
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

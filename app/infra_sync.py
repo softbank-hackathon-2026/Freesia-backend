@@ -5,7 +5,7 @@ VPC·서브넷까지 들어간다. AWS에서 사라진 인프라는 지우지 �
 목록을 볼 때마다 갱신한다(refresh). AWS를 한 번 읽는 데 1초 안팎이라 화면이 기다릴 만하다 (10/2 서버에서 측정).
 Sandbox는 키가 있을 때만 읽는다. 한 출처를 못 읽으면 그 출처 인프라는 DB 값을 그대로 두고, 다른 출처는 갱신한다.
 
-출처(Source)는 지금 AWS 계정(Workload·Sandbox)뿐이다. 인프라마다 provider(aws / onprem / gcp / azure)를 저장하는데,
+출처(Source)는 지금 AWS 계정(Workload·Sandbox)과 온프레미스(Proxmox, 설정이 있을 때만)다. 인프라마다 provider(aws / onprem / gcp / azure)를 저장하는데,
 태그가 아니라 어느 출처에서 읽었는지로 정한다. 새 클라우드를 붙일 때는 그 클라우드를 읽어 Found 목록을 돌려주는
 함수를 만들고 sources()에 Source 하나를 더하면 된다 (목록·상세 API, 사라진 인프라 숨기기는 그대로 동작한다).
 """
@@ -16,13 +16,16 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
 
+import httpx
 from botocore.exceptions import BotoCoreError, ClientError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models
 from app import aws
+from app import onprem
 from app.aws import WorkloadKeyMissing, account_client
+from app.config import get_settings
 from app.ids import now
 
 logger = logging.getLogger(__name__)
@@ -34,7 +37,7 @@ COOLDOWN_SECONDS = 5  # 한 화면이 거의 동시에 여러 번 불러도 AWS�
 RETRY_AFTER_FAILURE_SECONDS = 60  # AWS가 안 되면 목록 조회마다 기다리지 않게 잠시 쉰다
 NETWORKS = {"public", "db-isolated", "multi-az"}
 DEFAULT_COMPUTES = ["ecs-fargate", "lambda", "ec2"]
-PROVIDERS = ("aws", "onprem", "gcp", "azure")  # API 응답 provider 값. 지금 읽는 출처는 aws뿐이다
+PROVIDERS = ("aws", "onprem", "gcp", "azure")  # API 응답 provider 값. 지금 읽는 출처는 aws와 onprem이다
 
 # 화면 이름은 AWS에 없어서 여기 둔다. ADR-026에서 이름이 정해지면 바꾼다. VPC에 DisplayName·Description·
 # Network·Computes 태그가 있으면 태그가 우선이다. 표에도 태그에도 없으면 InfraId를 이름으로 쓴다.
@@ -82,6 +85,7 @@ class Found:
     app_subnet_ids: list[str] = field(default_factory=list)  # 프라이빗 중 db가 아닌 것 (shared-alb 앱 자리)
     alb: "SharedAlb | None" = None
     provider: str = "aws"
+    space: dict | None = None  # 온프레미스: onprem.py가 만든 인프라 Space 값. 있으면 apply가 AWS 표·태그 대신 이 값을 그대로 저장한다
 
 
 @dataclass(frozen=True)
@@ -143,8 +147,8 @@ def refresh(db: Session) -> None:
 
 
 def sources() -> list[Source]:
-    """지금 읽을 출처 목록. AWS는 키가 있는 계정마다 하나 (Workload는 필수, Sandbox는 선택)."""
-    return [
+    """지금 읽을 출처 목록. AWS는 키가 있는 계정마다 하나 (Workload는 필수, Sandbox는 선택). 온프레미스는 설정이 다 있을 때만 (선택)."""
+    result = [
         Source(
             key=f"aws:{account}",
             provider="aws",
@@ -154,10 +158,40 @@ def sources() -> list[Source]:
         )
         for account in aws.accounts()
     ]
+    if _onprem_configured():
+        result.append(Source(key="onprem", provider="onprem", required=False, read=_read_onprem, owns=_owned_by_onprem))
+    return result
 
 
 def _owned_by_aws_account(account: str, row: models.InfraSpace) -> bool:
     return row.provider == "aws" and aws.account_of(row.aws_account_id) == account
+
+
+def _owned_by_onprem(row: models.InfraSpace) -> bool:
+    return row.provider == "onprem"
+
+
+def _onprem_configured() -> bool:
+    s = get_settings()
+    return all((s.onprem_api_url, s.onprem_cf_client_id, s.onprem_cf_client_secret, s.onprem_pve_token_id, s.onprem_pve_token_secret))
+
+
+def _read_onprem() -> list["Found"]:
+    """Proxmox에서 infra-deploy 태그가 붙은 VM을 읽는다. VM 하나가 인프라 하나다 (AWS 계정·VPC 값은 없다)."""
+    s = get_settings()
+    try:
+        spaces = onprem.list_onprem_spaces(
+            s.onprem_api_url, s.onprem_cf_client_id, s.onprem_cf_client_secret, s.onprem_pve_token_id, s.onprem_pve_token_secret
+        )
+    except (httpx.HTTPError, KeyError, ValueError) as e:
+        raise SourceError("온프레미스(Proxmox)에서 인프라를 읽지 못했습니다.") from e
+    result = []
+    for space in spaces:
+        if not ID_PATTERN.match(space["id"]):
+            logger.warning("이름 형식이 틀린 온프레미스 VM은 건너뜁니다: %r", space["id"])
+            continue
+        result.append(Found(space["id"], "", "", "", {}, space=space))
+    return result
 
 
 def _read_aws(account: str) -> list["Found"]:
@@ -291,7 +325,7 @@ def apply(db: Session, found: list[Found], read: list[Source]) -> None:
     seen = set()
     for f in found:
         seen.add(f.id)
-        info = describe(f)
+        info = f.space or describe(f)
         row = db.get(models.InfraSpace, f.id)
         if row is None:
             row = models.InfraSpace(id=f.id, created_at=now())
@@ -299,15 +333,18 @@ def apply(db: Session, found: list[Found], read: list[Source]) -> None:
         row.provider = f.provider
         row.name, row.description = info["name"], info["description"]
         row.network, row.computes = info["network"], info["computes"]
-        row.aws_account_id, row.region, row.vpc_id = f.account_id, f.region, f.vpc_id
+        row.aws_account_id, row.region, row.vpc_id = f.account_id or None, f.region or None, f.vpc_id or None
         row.public_subnet_ids, row.private_subnet_ids = f.public_subnet_ids, f.private_subnet_ids
         row.app_subnet_ids = f.app_subnet_ids
         row.alb_listener_arn = f.alb.listener_arn if f.alb else None
         row.alb_security_group_id = f.alb.security_group_id if f.alb else None
         row.alb_base_url = f.alb.base_url if f.alb else None
         row.is_default = f.tags.get(DEFAULT_TAG, "").strip().lower() == "true"
-        # 로드밸런서는 서로 다른 AZ의 퍼블릭 서브넷 2개 이상이 있어야 만들 수 있다
-        row.status = "ready" if len(f.public_subnet_ids) >= 2 else "preparing"
+        if f.space:
+            row.status = f.space["status"]
+        else:
+            # 로드밸런서는 서로 다른 AZ의 퍼블릭 서브넷 2개 이상이 있어야 만들 수 있다
+            row.status = "ready" if len(f.public_subnet_ids) >= 2 else "preparing"
     for row in db.scalars(select(models.InfraSpace).where(models.InfraSpace.id.not_in(seen))):
         if any(source.owns(row) for source in read):
             row.status = "unavailable"
