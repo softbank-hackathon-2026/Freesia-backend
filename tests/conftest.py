@@ -69,18 +69,30 @@ FAKE_SHA = "c" * 40
 @pytest.fixture(autouse=True)
 def gh(monkeypatch):
     """가짜 GitHub. 테스트가 진짜 GitHub을 부르지 않게 한다.
-    보낸 요청은 requests에 쌓이고, commit_status·dispatch_status로 응답 코드를 바꾼다."""
-    state = {"requests": [], "commit_status": 200, "dispatch_status": 204}
+    보낸 요청은 requests에 쌓이고, commit_status·dispatch_status로 응답 코드를 바꾼다.
+    templates에 {"ecs-fargate/basic": {"main.tf": "..."}}를 넣으면 배포 레포 템플릿으로 돌려준다 (없으면 404)."""
+    state = {"requests": [], "commit_status": 200, "dispatch_status": 204, "templates": {}}
 
     def handler(req: httpx.Request) -> httpx.Response:
         state["requests"].append(req)
         if "/commits/" in req.url.path:
             return httpx.Response(state["commit_status"], text=FAKE_SHA)
+        if "/contents/templates/" in req.url.path:
+            path = req.url.path.split("/contents/", 1)[1]
+            for name, files in state["templates"].items():
+                if path == f"templates/{name}":
+                    return httpx.Response(200, json=[
+                        {"name": f, "path": f"{path}/{f}", "type": "file"} for f in files
+                    ])
+                if path.startswith(f"templates/{name}/"):
+                    return httpx.Response(200, text=files[path.rsplit("/", 1)[1]])
+            return httpx.Response(404, json={"message": "Not Found"})
         if state["dispatch_status"] == 204:
             return httpx.Response(204)
         return httpx.Response(state["dispatch_status"], json={"message": "fake"})
 
     monkeypatch.setattr(github, "TRANSPORT", httpx.MockTransport(handler))
+    monkeypatch.setattr(github, "_template_cache", {})
     return state
 
 

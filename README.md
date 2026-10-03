@@ -43,7 +43,7 @@ API 계약은 [백엔드 API 명세 (Notion)](https://app.notion.com/p/3ec8bee9a
 | 구성안 | `POST /api/app-spaces/{id}/plans`, `GET ...?compute=` | 🟡 | 템플릿 `ecs-fargate/basic`, `lambda/basic`, `ec2/basic`. AI가 채운 값(Fargate만), 없으면 템플릿 기본값 |
 | 배포 | `POST /api/app-spaces/{id}/deployments` | 🟡 | `DEPLOY_SIMULATE=true`라 가짜 진행(약 8초). `false`면 `deploy.yml` 실행 |
 | | `GET /api/deployments/{id}`, `/events` (SSE) | 🟡 | 가짜 진행 결과 |
-| | `GET /api/deployments/{id}/resources` | 🟠 | 콜백이 와야 채워짐 |
+| | `GET /api/deployments/{id}/resources` | 🟠 | 배포 시작 때 템플릿 자원을 "대기"로 미리 채움, 워크플로 계획이 오면 그걸로 바뀜 |
 | 내리기 | `POST /api/app-spaces/{id}/teardown` | 🟠 | `destroy.yml` 실행. 실제 워크플로로 배포된 적 있어야 함 (`not_deployed`). 결과는 앱의 `teardown_status` |
 | 워크플로 전용 | `POST /api/deployments/{id}/callback` | 🟠 | 서버 준비 완료(서명 키 연결). 워크플로 실행 후 동작 |
 | | `GET /api/plans/{plan_id}` | 🟠 | 같음 |

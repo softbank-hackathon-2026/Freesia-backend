@@ -1,7 +1,7 @@
 """배포 기록, 진행 단계, 자원별 상태 (ADR-009, API 명세 9절)."""
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint, false
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -59,3 +59,5 @@ class DeploymentResource(Base):
     state: Mapped[str] = mapped_column(String(20))
     reason: Mapped[str | None] = mapped_column(String(1000))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # 배포 시작 때 템플릿을 보고 미리 넣은 자원. 워크플로가 같은 주소를 보고하면 false가 되고, 끝까지 안 오면 지운다
+    predicted: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
