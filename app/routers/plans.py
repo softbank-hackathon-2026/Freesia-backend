@@ -26,6 +26,10 @@ def get_plan_for_workflow(
     if plan is None:
         raise HTTPException(404, detail={"error": "plan_not_found", "message": "구성안을 찾을 수 없습니다."})
     infra = db.get(models.InfraSpace, db.get(models.AppSpace, plan.app_space_id).infra_id)
+    if plan.compute == "vm":
+        # 온프레미스: VM 주소만 넘긴다 (배포 레포 ansible/README.md "인프라 Space가 주는 값")
+        return WorkflowPlan(id=plan.id, template=plan.template, values=plan.values,
+                            infra=PlanInfra(id=infra.id, vm_host=infra.vm_host))
     shared = plan.template == catalog.SHARED_ALB.name
     return WorkflowPlan(
         id=plan.id,

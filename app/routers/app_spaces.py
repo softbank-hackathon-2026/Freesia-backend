@@ -383,20 +383,23 @@ def _start_workflow(db: Session, space: models.AppSpace, dep: models.Deployment)
             dep.plan_id = _new_plan(db, space, dep.compute).id
         db.commit()
         owner, repo = parse_github_url(space.repo_url)
-        github.dispatch(
-            "deploy.yml",
-            {
-                "deployment_id": dep.id,
-                "application_id": space.id,
-                "repo": f"{owner}/{repo}",
-                "commit_sha": dep.commit_sha,
-                "infra_id": space.infra_id,
-                "compute": dep.compute,
-                "plan_id": dep.plan_id,
-                "callback_url": f"{get_settings().public_api_base}/deployments/{dep.id}/callback",
-            },
-        )
-        _prefill_resources(db, dep)
+        inputs = {
+            "deployment_id": dep.id,
+            "application_id": space.id,
+            "repo": f"{owner}/{repo}",
+            "commit_sha": dep.commit_sha,
+            "infra_id": space.infra_id,
+            "compute": dep.compute,
+            "plan_id": dep.plan_id,
+            "callback_url": f"{get_settings().public_api_base}/deployments/{dep.id}/callback",
+        }
+        if dep.compute == "vm":
+            # 온프레미스는 Ansible 워크플로. 입력은 deploy.yml과 같고 compute만 없다 (10/3 박소정 님)
+            inputs.pop("compute")
+            github.dispatch("deploy-vm.yml", inputs)
+        else:
+            github.dispatch("deploy.yml", inputs)
+            _prefill_resources(db, dep)  # vm은 Terraform 템플릿이 없어 미리 채울 목록이 없다
     except github.GitHubError as e:
         deploy.record_event(db, dep, "failed", dep.step, reason=str(e))
         db.commit()
@@ -445,8 +448,15 @@ def teardown_app_space(app_space_id: str, db: Session = Depends(get_db)) -> Tear
     if not _real_deployments(db, space):
         raise HTTPException(409, detail={"error": "not_deployed", "message": "실제로 배포된 자원이 없습니다."})
     callback_url = f"{get_settings().public_api_base}/app-spaces/{space.id}/teardown/callback"
+    infra = db.get(models.InfraSpace, space.infra_id)
     try:
-        github.dispatch("destroy.yml", {"application_id": space.id, "confirm": space.id, "callback_url": callback_url})
+        if infra is not None and infra.provider == "onprem":
+            # 온프레미스는 Terraform 상태가 없어서 VM 주소를 같이 넘긴다 (배포 레포 destroy-vm.yml)
+            github.dispatch("destroy-vm.yml", {
+                "application_id": space.id, "confirm": space.id, "vm_host": infra.vm_host or "", "callback_url": callback_url,
+            })
+        else:
+            github.dispatch("destroy.yml", {"application_id": space.id, "confirm": space.id, "callback_url": callback_url})
     except github.GitHubError as e:
         raise HTTPException(502, detail={"error": "teardown_failed", "message": str(e)}) from e
     space.teardown_status = "requested"

@@ -29,6 +29,7 @@ erDiagram
         json public_subnet_ids
         json private_subnet_ids
         json app_subnet_ids
+        varchar vm_host "온프레미스 서비스 VM 호스트"
         boolean is_default "DefaultInfra 태그. 인프라 선택 안 함일 때"
         varchar alb_listener_arn
         varchar alb_security_group_id
