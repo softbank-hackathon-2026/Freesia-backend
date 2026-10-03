@@ -227,8 +227,13 @@ def _converse(system: str, user: str) -> str:
         modelId=s.ai_model_id,
         system=[{"text": system}],
         messages=[{"role": "user", "content": [{"text": user}]}],
-        inferenceConfig={"maxTokens": 4096},
+        # 추론 토큰도 이 상한에 들어간다. 10/3 실측 2.2~2.6k(Kimi K3). 60초 안에 낼 수 있는 양(약 9k)을 넘기지 않는다
+        # ponytail: Kimi K3 기준 고정값. 출력 상한이 더 작은 모델(예: Mistral Large 4K)로 AI_MODEL_ID를 바꾸면
+        # 모든 분석이 ClientError로 failed가 된다. 모델을 바꿀 때 이 값을 같이 확인하고, 필요하면 AI_MAX_TOKENS 설정으로 뺀다
+        inferenceConfig={"maxTokens": 8192},
         **extra,
     )
+    if resp["stopReason"] != "end_turn":  # max_tokens면 잘린 응답이라 형식 오류와 구분하려고 남긴다
+        logger.warning("모델 응답이 정상 종료가 아님: stopReason=%s usage=%s", resp["stopReason"], resp["usage"])
     # 추론 모델은 reasoningContent 블록을 같이 돌려주므로 text 블록만 모은다
     return "".join(b["text"] for b in resp["output"]["message"]["content"] if "text" in b)
