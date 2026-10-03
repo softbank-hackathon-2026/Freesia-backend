@@ -87,6 +87,7 @@ erDiagram
         varchar app_space_id FK
         varchar compute
         varchar plan_id "plans.id, API에서 검사"
+        varchar source_deployment_id "재배포 원본 ID, nullable; API에서 검사"
         varchar commit_sha
         varchar status "pending ~ success / failed"
         varchar step "queued ~ done"

@@ -55,3 +55,50 @@ def test_upgrade_accepts_percent_encoded_url(tmp_path, monkeypatch):
     finally:
         get_settings.cache_clear()
     assert (tmp_path / "p@ss.db").exists()
+
+
+def test_redeploy_migration_preserves_legacy_rows_and_round_trips(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    from sqlalchemy import MetaData, Table
+
+    url = f"sqlite:///{tmp_path}/redeploy.db"
+    monkeypatch.setenv("DATABASE_URL", url)
+    get_settings.cache_clear()
+    config = Config(str(ROOT / "alembic.ini"))
+    db_engine = create_engine(url)
+    try:
+        command.upgrade(config, "0010")
+        metadata = MetaData()
+        spaces = Table("app_spaces", metadata, autoload_with=db_engine)
+        deployments = Table("deployments", metadata, autoload_with=db_engine)
+        at = datetime.now(timezone.utc)
+        with db_engine.begin() as conn:
+            conn.execute(spaces.insert().values(
+                id="app-legacy", name="Legacy", repo_url="https://github.com/org/todo", branch="main",
+                infra_id="sbh-workload-demo-vpc-public01", created_at=at,
+            ))
+            conn.execute(deployments.insert().values(
+                id="dep-legacy", app_space_id="app-legacy", compute="ecs-fargate",
+                status="success", step="done", commit_sha="a" * 40, created_at=at,
+            ))
+        command.upgrade(config, "head")
+        with db_engine.begin() as conn:
+            assert conn.execute(text(
+                "SELECT commit_sha, source_deployment_id FROM deployments WHERE id='dep-legacy'"
+            )).one() == ("a" * 40, None)
+            # The previous application can still INSERT without the new nullable column.
+            conn.execute(deployments.insert().values(
+                id="dep-old-app", app_space_id="app-legacy", compute="ecs-fargate",
+                status="pending", step="queued", created_at=at,
+            ))
+        command.downgrade(config, "0010")
+        command.upgrade(config, "head")
+        with db_engine.connect() as conn:
+            assert conn.execute(text("SELECT count(*) FROM deployments")).scalar_one() == 2
+            assert compare_metadata(MigrationContext.configure(conn), Base.metadata) == []
+        # CI also exercises the entire history in a disposable PostgreSQL database.
+        command.downgrade(config, "base")
+        command.upgrade(config, "head")
+    finally:
+        db_engine.dispose()
+        get_settings.cache_clear()

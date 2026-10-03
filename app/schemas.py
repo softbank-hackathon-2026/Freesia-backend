@@ -254,6 +254,32 @@ class DeploymentCreate(BaseModel):
     plan_id: str | None = Field(None, max_length=32, description="고른 구성안 (API 명세 8절). 지금은 저장만 한다")
 
 
+class RedeploymentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_deployment_id: str = Field(min_length=1, max_length=32)
+    target_commit_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+
+
+class RedeployPlan(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    template: str
+    values: dict[str, Any]
+
+
+class RedeployContext(BaseModel):
+    app_space_id: str
+    repo_url: str
+    branch: str
+    source_deployment_id: str
+    source_commit_sha: str | None
+    target_commit_sha: str
+    compute: Compute
+    plan: RedeployPlan
+
+
 class Deployment(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -263,6 +289,9 @@ class Deployment(BaseModel):
     status: DeploymentStatus
     url: str | None = None
     reason: str | None = Field(None, description="실패 사유")
+    commit_sha: str | None = None
+    plan_id: str | None = None
+    source_deployment_id: str | None = None
     created_at: UtcDatetime
 
 

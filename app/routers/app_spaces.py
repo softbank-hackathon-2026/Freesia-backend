@@ -21,6 +21,8 @@ from app.schemas import (
     DeploymentCreate,
     PlanCreate,
     PlanSet,
+    RedeployContext,
+    RedeploymentCreate,
     Teardown,
     TeardownCallback,
     parse_github_url,
@@ -92,8 +94,18 @@ def check_compute(infra: models.InfraSpace, compute: str) -> None:
         )
 
 
-def find_app_space(db: Session, app_space_id: str) -> models.AppSpace:
-    space = db.get(models.AppSpace, app_space_id)
+def find_app_space(db: Session, app_space_id: str, *, lock: bool = False) -> models.AppSpace:
+    # Serialize deployment/teardown admission across server workers on PostgreSQL.
+    # SQLite ignores FOR UPDATE; it remains suitable for sequential local tests.
+    if lock:
+        space = db.scalar(
+            select(models.AppSpace)
+            .where(models.AppSpace.id == app_space_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    else:
+        space = db.get(models.AppSpace, app_space_id)
     if space is None or space.deleted_at is not None:
         raise HTTPException(404, detail={"error": "app_space_not_found", "message": "앱 Space를 찾을 수 없습니다."})
     return space
@@ -156,7 +168,7 @@ def delete_app_space(app_space_id: str, db: Session = Depends(get_db)) -> Respon
 
     AWS에 떠 있는 앱은 먼저 내려야 한다. 숨기면 비용은 계속 나가는데 화면에서 내릴 수 없게 된다.
     """
-    space = find_app_space(db, app_space_id)
+    space = find_app_space(db, app_space_id, lock=True)
     if _in_progress(db, space):
         raise HTTPException(
             409, detail={"error": "deployment_in_progress", "message": "배포가 끝난 뒤에 삭제할 수 있습니다."}
@@ -215,7 +227,7 @@ def create_deployment(
 
     배포 레포 연결 전(DEPLOY_SIMULATE=true)에는 워크플로 대신 가짜 진행을 DB에 기록한다.
     """
-    space = find_app_space(db, app_space_id)
+    space = find_app_space(db, app_space_id, lock=True)
     check_compute(db.get(models.InfraSpace, space.infra_id), body.compute)
     if body.plan_id is not None:
         plan = db.get(models.Plan, body.plan_id)
@@ -257,17 +269,106 @@ def create_deployment(
     return dep
 
 
+def _redeploy_source(db: Session, space: models.AppSpace) -> tuple[models.Deployment, models.Plan]:
+    if space.teardown_status is not None and space.teardown_requested_at is None:
+        raise HTTPException(409, detail={
+            "error": "redeploy_unavailable", "message": "내리기 이력을 확인할 수 없습니다. 분석과 구성안 선택 후 배포해 주세요."
+        })
+    if _in_progress(db, space):
+        raise HTTPException(
+            409, detail={"error": "deployment_in_progress", "message": "이 앱은 이미 배포가 진행 중입니다."}
+        )
+    if _tearing_down(space):
+        raise HTTPException(409, detail=TEARDOWN_IN_PROGRESS)
+    query = select(models.Deployment).where(
+        models.Deployment.app_space_id == space.id,
+        models.Deployment.status == "success",
+        models.Deployment.run_id.is_not(None),
+    )
+    # A failed destroy may have removed resources, and may replace an older successful teardown status.
+    if space.teardown_requested_at is not None:
+        query = query.where(models.Deployment.created_at > space.teardown_requested_at)
+    source = db.scalar(query.order_by(models.Deployment.created_at.desc(), models.Deployment.id.desc()).limit(1))
+    if source is None and space.teardown_requested_at is not None:
+        raise HTTPException(409, detail={
+            "error": "not_deployed", "message": "내리기 시도 이후 성공한 배포가 없습니다. 자원이 일부 삭제되었을 수 있으므로 분석과 구성안 선택 후 배포해 주세요."
+        })
+    plan = db.get(models.Plan, source.plan_id) if source is not None and source.plan_id else None
+    # Validate the newest actual success; never fall back to an older configuration.
+    if source is None or plan is None or plan.app_space_id != space.id or plan.compute != source.compute:
+        raise HTTPException(409, detail={
+            "error": "redeploy_unavailable", "message": "재사용할 실제 성공 배포와 구성안이 없습니다. 분석과 구성안 선택 후 배포해 주세요."
+        })
+    check_compute(db.get(models.InfraSpace, space.infra_id), source.compute)
+    return source, plan
+
+
+def _redeploy_target(space: models.AppSpace) -> str:
+    try:
+        return github.latest_commit(space.repo_url, space.branch)
+    except github.GitHubError as e:
+        raise HTTPException(502, detail={"error": "github_error", "message": str(e)}) from e
+
+
+@router.get("/{app_space_id}/redeploy-context", response_model=RedeployContext, summary="재배포 검토 정보")
+def get_redeploy_context(app_space_id: str, db: Session = Depends(get_db)) -> RedeployContext:
+    space = find_app_space(db, app_space_id)
+    source, plan = _redeploy_source(db, space)
+    return RedeployContext(
+        app_space_id=space.id, repo_url=space.repo_url, branch=space.branch,
+        source_deployment_id=source.id, source_commit_sha=source.commit_sha,
+        target_commit_sha=_redeploy_target(space), compute=source.compute, plan=plan,
+    )
+
+
+@router.post(
+    "/{app_space_id}/redeployments", response_model=Deployment,
+    status_code=status.HTTP_201_CREATED, summary="검토한 커밋으로 기존 구성안 재배포",
+)
+def create_redeployment(
+    app_space_id: str, body: RedeploymentCreate, background: BackgroundTasks, db: Session = Depends(get_db)
+) -> models.Deployment:
+    space = find_app_space(db, app_space_id, lock=True)
+    source, plan = _redeploy_source(db, space)
+    if source.id != body.source_deployment_id:
+        raise HTTPException(409, detail={
+            "error": "redeploy_source_changed", "message": "마지막 성공 배포가 바뀌었습니다. 재배포 정보를 다시 확인해 주세요."
+        })
+    if _redeploy_target(space) != body.target_commit_sha:
+        raise HTTPException(409, detail={
+            "error": "redeploy_target_changed", "message": "브랜치 커밋이 바뀌었습니다. 재배포 정보를 다시 확인해 주세요."
+        })
+    dep = models.Deployment(
+        id=new_id("dep"), app_space_id=space.id, compute=source.compute, plan_id=plan.id,
+        commit_sha=body.target_commit_sha, source_deployment_id=source.id,
+        status="pending", step="queued", created_at=now(),
+    )
+    db.add(dep)
+    db.flush()
+    deploy.record_event(db, dep, "pending", "queued")
+    space.latest_deployment_id = dep.id
+    # Release admission only after the pending attempt is visible to other requests.
+    db.commit()
+    if get_settings().deploy_simulate:
+        background.add_task(deploy.simulate, dep.id)
+    else:
+        _start_workflow(db, space, dep)
+    return dep
+
+
 def _start_workflow(db: Session, space: models.AppSpace, dep: models.Deployment) -> None:
     """배포 레포 deploy.yml을 실행한다 (ADR-009). 배포를 먼저 저장해 두어야 곧바로 오는 콜백을 받을 수 있다.
 
     실행 요청이 실패하면 배포를 바로 failed로 남긴다. 진행 상황은 이후 워크플로 콜백으로 온다.
     """
     try:
-        latest = analysis.latest(db, space.id)
-        # 분석한 코드와 배포하는 코드를 같게 맞춘다. 분석 커밋이 없으면 브랜치 최신 커밋
-        dep.commit_sha = (latest.commit_sha if latest is not None and latest.commit_sha else None) or (
-            github.latest_commit(space.repo_url, space.branch)
-        )
+        if dep.source_deployment_id is None:
+            latest = analysis.latest(db, space.id)
+            # Initial deployments retain their existing analyzed-commit behavior.
+            dep.commit_sha = (latest.commit_sha if latest is not None and latest.commit_sha else None) or (
+                github.latest_commit(space.repo_url, space.branch)
+            )
+        # Redeployments already persist the reviewed SHA and validated source plan.
         # 워크플로는 plan_id로 템플릿·값·VPC를 받아 간다. 구성안 없이 배포하면 기본값 구성안을 만든다
         if dep.plan_id is None:
             dep.plan_id = _new_plan(db, space, dep.compute).id
@@ -321,7 +422,7 @@ def teardown_app_space(app_space_id: str, db: Session = Depends(get_db)) -> Tear
     앱 기록은 남고 다시 배포할 수 있다. 결과는 Destroy 워크플로가 내리기 콜백으로 알려 주고,
     앱의 `teardown_status`가 `requested` → `success` / `failed`로 바뀐다.
     """
-    space = find_app_space(db, app_space_id)
+    space = find_app_space(db, app_space_id, lock=True)
     if _tearing_down(space):
         raise HTTPException(409, detail=TEARDOWN_IN_PROGRESS)
     if _in_progress(db, space):
@@ -366,7 +467,7 @@ def teardown_callback(
     except ValidationError as e:
         raise RequestValidationError(e.errors()) from e
 
-    space = find_app_space(db, app_space_id)
+    space = find_app_space(db, app_space_id, lock=True)
     if space.teardown_status != "requested":
         raise HTTPException(409, detail={"error": "teardown_not_requested", "message": "요청 중인 내리기가 없습니다."})
     space.teardown_status = cb.status
