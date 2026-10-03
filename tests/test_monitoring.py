@@ -75,11 +75,14 @@ class FakeAWS:
             for q in MetricDataQueries
         ]}
 
-    def describe_log_streams(self, logGroupName, **_):
+    def describe_log_streams(self, logGroupName, logStreamNamePrefix="", **kwargs):
         self.log_group = logGroupName
+        self.stream_query = {"logStreamNamePrefix": logStreamNamePrefix, **kwargs}
         if self.missing_group:
             raise ClientError({"Error": {"Code": "ResourceNotFoundException"}}, "DescribeLogStreams")
-        return {"logStreams": [{"logStreamName": name} for name in self.streams]}
+        if logStreamNamePrefix and "orderBy" in kwargs:  # 실제 AWS도 거절한다
+            raise ClientError({"Error": {"Code": "InvalidParameterException"}}, "DescribeLogStreams")
+        return {"logStreams": [{"logStreamName": n} for n in self.streams if n.startswith(logStreamNamePrefix)]}
 
     def get_log_events(self, logStreamName, limit, **_):
         return {"events": self.streams[logStreamName][-limit:]}
@@ -290,7 +293,15 @@ def test_ec2_without_running_instance_is_waiting(client, aws):
     assert aws.metric_queries is None  # 서버가 없으면 지표를 묻지 않는다
 
 
-def test_ec2_logs_unsupported(client, aws):
-    got = logs(client, deployed(client, compute="ec2"))
-    assert (got["status"], got["lines"]) == ("unsupported", [])
-    assert aws.log_group is None
+def test_ec2_logs_only_current_deployment(client, aws):
+    """templates/ec2/basic: 스트림 <deployment_id>/<instance_id>/app. 재배포 전 서버 로그는 빼야 한다."""
+    space = deployed(client, compute="ec2")
+    dep_id = f"dep-{space['id'][4:]}"
+    aws.streams = {
+        f"{dep_id}/i-new/app": [event(1_759_399_201_000, "sample-shop listening on 3000")],
+        "dep-old/i-old/app": [event(1_759_399_202_000, "old server")],
+    }
+    got = logs(client, space)
+    assert (got["status"], [line["message"] for line in got["lines"]]) == ("ok", ["sample-shop listening on 3000"])
+    assert aws.log_group == f"/ec2/sbh-workload-demo-{space['id']}"
+    assert aws.stream_query["logStreamNamePrefix"] == f"{dep_id}/"
