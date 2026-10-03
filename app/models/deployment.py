@@ -17,6 +17,7 @@ class Deployment(Base):
     # plans 테이블이 생기면 FK를 건다 (API 명세 8절)
     plan_id: Mapped[str | None] = mapped_column(String(32))
     commit_sha: Mapped[str | None] = mapped_column(String(40))
+    source_deployment_id: Mapped[str | None] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(20))
     step: Mapped[str] = mapped_column(String(20))
     url: Mapped[str | None] = mapped_column(String(500))

@@ -52,6 +52,25 @@ API 계약은 [백엔드 API 명세 (Notion)](https://app.notion.com/p/3ec8bee9a
 
 에러는 모두 `{"error": "코드", "message": "설명"}`입니다. 요청·응답 모양은 Swagger와 Notion 명세를 봐 주세요.
 
+## 기존 구성안으로 재배포 (Issue #8)
+
+1. `GET /api/app-spaces/{id}/redeploy-context`로 검토 정보를 읽습니다. DB를 바꾸지 않고 GitHub에서 등록된 브랜치 HEAD를 확인합니다.
+2. 응답의 원본·대상 SHA와 구성안을 사용자가 검토한 뒤 `POST /api/app-spaces/{id}/redeployments`에 `source_deployment_id`, `target_commit_sha` 두 필드만 보냅니다. 다른 필드는 422로 거절합니다.
+3. 새 배포 ID로 기존 상세·SSE·자원 API를 사용합니다. POST와 `GET /api/deployments/{id}`는 nullable `commit_sha`, `plan_id`, `source_deployment_id`도 반환합니다.
+
+검토 응답은 `{app_space_id, repo_url, branch, source_deployment_id, source_commit_sha, target_commit_sha, compute, plan: {id, template, values}}`입니다. 분석이나 구성안 생성을 호출하지 않습니다. 실행 시 최신 분석 SHA 대신 검토한 SHA를 저장해 dispatch하고 원본 `compute`와 `plan_id`를 재사용합니다.
+
+원본은 해당 앱의 가장 최근 실제 성공 배포(`status=success`, `run_id IS NOT NULL`)입니다. 이후 실패 기록은 원본을 바꾸지 않습니다. 해당 성공 배포의 구성안이 없거나 앱·컴퓨팅이 다르면 오래된 구성안으로 넘어가지 않고 `409 redeploy_unavailable`로 거절합니다. 가짜 진행·실행 ID 없는 과거 기록도 같은 오류입니다. 원본 SHA가 없는 기록은 `source_commit_sha: null`로 표시합니다.
+
+- 원본 성공 배포 또는 브랜치 HEAD가 검토 후 바뀌면 `409 redeploy_source_changed` / `redeploy_target_changed`: 다시 GET하고 사용자 확인을 새로 받습니다.
+- 배포·내리기 진행 중이면 기존 `409 deployment_in_progress` / `teardown_in_progress`를 반환합니다. 완료된 내리기 이후 새 실제 성공 배포가 없으면 `409 not_deployed`이며 분석·구성안 선택부터 다시 진행합니다.
+- 현재 인프라·컴퓨팅의 준비 상태를 다시 검사합니다. GitHub SHA 조회 실패는 `502 github_error`이며 배포를 만들지 않습니다. dispatch 실패는 기존 배포 API와 같이 `201` 응답의 `failed` 배포로 기록됩니다.
+- 서버 PostgreSQL에서는 앱 행 잠금으로 일반 배포·재배포·내리기·삭제 접수를 직렬화합니다. SQLite 테스트는 순차 동작을 확인하며 PostgreSQL의 실제 동시 요청 잠금을 대체 검증하지 않습니다.
+
+구성안의 템플릿 이름·값은 그대로 재사용하지만 전체 인프라 스냅샷이나 템플릿 리비전을 고정하지 않습니다. 워크플로는 실행 시 현재 인프라와 배포 레포 템플릿을 읽습니다. 이미지 교체만 실행됨, URL 유지, 무중단, 자동 롤백을 보장하지 않습니다.
+
+배포 전 `0011` 마이그레이션으로 nullable `deployments.source_deployment_id`를 추가해야 합니다. 이전 데이터는 null이며 구버전 앱도 새 컬럼 없이 INSERT할 수 있습니다. 운영 앱 롤백은 컬럼을 유지합니다. downgrade는 기존 CI와 같은 폐기 가능한 DB의 왕복 검사에만 사용합니다.
+
 ## 폴더 구조
 
 ```
@@ -74,7 +93,7 @@ app/
   ai/                AI 분석 모듈 (강효승 님): 저장소 읽기 repo.py, 모델 호출·검증 analyze.py
   models/            SQLAlchemy 모델: repositories, infra_spaces, app_spaces, analyses, plans, deployments
   routers/           API: health, repositories, infra_spaces, app_spaces, deployments, plans
-alembic/versions/    마이그레이션 0001~0009
+alembic/versions/    마이그레이션 0001~0010
 tests/               pytest (SQLite 메모리 DB)
 .github/workflows/   ci.yml (PR·main 검사), deploy.yml (main 머지 시 배포)
 .aws/                task-definition.json (서버 환경변수·비밀값 연결)
@@ -139,3 +158,6 @@ alembic upgrade head
 - [ ] 나머지 인프라 2종 실제 값 (박준서 님)
 - [ ] 가짜 진행이 서버 교체로 멈추지 않게, 30분 시간 초과
 - [ ] 모니터링(지표·로그) API, 내리기 완료 콜백(배포 레포와 협의)
+
+### Redeployment review follow-up
+A teardown attempt can partially remove resources even when it fails. The simple redeployment source must be newer than the latest teardown request, regardless of its final status; otherwise the API returns `409 not_deployed` and requires normal analysis/configuration. Missing timestamps in teardown history return `409 redeploy_unavailable`. This also prevents a later failed teardown from hiding an earlier successful destroy. Fresh actual successful deployment after the request restores eligibility.
