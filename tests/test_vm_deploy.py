@@ -75,10 +75,10 @@ def test_vm_deploy_runs_deploy_vm_workflow(client, real_mode, gh, onprem):
 def test_vm_without_ai_values_cannot_plan(client, real_mode, gh, onprem):
     app_id = new_app(client, values=None)
     r = client.post(f"/api/app-spaces/{app_id}/plans", json={"compute": "vm"})
-    assert (r.status_code, r.json()["error"]) == (400, "plan_values_missing")
+    assert (r.status_code, r.json()["error"]) == (400, "vm_values_missing")
     # 구성안 없이 배포하면 실행하지 않고 실패로 남긴다
     dep = deploy(client, app_id).json()
-    assert dep["status"] == "failed" and "분석" in dep["reason"]
+    assert dep["status"] == "failed" and "runtime" in dep["reason"]
     assert dispatches(gh) == []
 
 
@@ -112,27 +112,24 @@ def test_vm_monitoring_is_unsupported(client, onprem):
     assert client.get(f"/api/app-spaces/{app_id}/metrics").json()["status"] == "unsupported"
 
 
-# values.yaml 검사 (배포 레포 scripts/vm_plan.py check_values와 같게)
+# values.yaml 검사는 app/catalog.py (PR #39, 강효승 님). 칸마다 넣어 보는 AI 검사 때문에 runtime·start_command가
+# 비어도 통과시키고, 구성안을 만들 때 vm_missing으로 막는다
 
 
-def test_vm_values_defaults_and_python():
-    v = catalog.fill_values("vm", {"runtime": "python", "start_command": ".venv/bin/python app.py",
-                                   "env": {"APP_ENV": "demo"}, "application_id": "evil"})
-    assert (v["app_port"], v["health_check_path"], v["env"], "application_id" in v) == (8080, "/", {"APP_ENV": "demo"}, False)
-    war = catalog.fill_values("vm", {"runtime": "java", "java_server": "tomcat", "runtime_version": 21})
-    assert (war["runtime_version"], war["start_command"]) == ("21", "")
+def test_vm_values_defaults_and_missing():
+    v = catalog.fill_values("vm", {"runtime": "python", "start_command": ".venv/bin/python app.py", "application_id": "evil"})
+    assert (v["app_port"], v["health_check_path"], "application_id" in v) == (8080, "/", False)
+    assert catalog.vm_missing(v) == []
+    assert catalog.vm_missing(catalog.fill_values("vm", {})) == ["runtime", "start_command"]
+    war = catalog.fill_values("vm", {"runtime": "java", "java_server": "tomcat", "runtime_version": "21"})
+    assert catalog.vm_missing(war) == []  # Tomcat WAR는 실행 명령이 없어도 된다
 
 
 @pytest.mark.parametrize("values", [
-    {},                                                           # runtime 없음
     {"runtime": "ruby", "start_command": "x"},
-    {"runtime": "python"},                                        # 실행 명령 없음
     {"runtime": "python", "start_command": "x", "app_port": 80},  # 1024 미만
     {"runtime": "python", "start_command": "a\nb"},
-    {"runtime": "python", "start_command": "x", "env": {"bad-name": "v"}},
-    {"runtime": "python", "start_command": "x", "env": {"A": 'x" y'}},
     {"runtime": "java", "runtime_version": "11", "start_command": "x"},
-    {"runtime": "java", "java_server": "tomcat", "tomcat_version": "9"},
     {"runtime": "python", "start_command": "x", "health_check_path": "health"},
 ])
 def test_vm_values_rejected(values):

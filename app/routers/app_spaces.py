@@ -400,16 +400,16 @@ def _start_workflow(db: Session, space: models.AppSpace, dep: models.Deployment)
         else:
             github.dispatch("deploy.yml", inputs)
             _prefill_resources(db, dep)  # vm은 Terraform 템플릿이 없어 미리 채울 목록이 없다
-    except PlanUnavailable as e:
-        db.rollback()
-        deploy.record_event(db, dep, "failed", dep.step, reason=str(e))
-        db.commit()
     except github.GitHubError as e:
         deploy.record_event(db, dep, "failed", dep.step, reason=str(e))
         db.commit()
     except alb_rules.RouteConflict as e:
         db.rollback()
         deploy.record_event(db, dep, "failed", dep.step, reason=str(e))
+        db.commit()
+    except HTTPException as e:  # 구성안을 못 만듦(vm_values_missing). 배포가 pending으로 남아 앱이 막히지 않게 실패로 닫는다
+        db.rollback()
+        deploy.record_event(db, dep, "failed", dep.step, reason=e.detail["message"])
         db.commit()
 
 
@@ -519,15 +519,8 @@ def create_plan(app_space_id: str, body: PlanCreate, db: Session = Depends(get_d
     except alb_rules.RouteConflict as e:
         db.rollback()
         raise HTTPException(409, detail={"error": "route_path_taken", "message": str(e)}) from e
-    except PlanUnavailable as e:
-        db.rollback()
-        raise HTTPException(400, detail={"error": "plan_values_missing", "message": str(e)}) from e
     db.commit()
     return _plan_set(body.compute, [plan])
-
-
-class PlanUnavailable(Exception):
-    """구성안 값을 채울 수 없음 (vm인데 AI 값이 없음). 메시지는 화면에 그대로 보여 줄 수 있다."""
 
 
 def _new_plan(db: Session, space: models.AppSpace, compute: str) -> models.Plan:
@@ -546,10 +539,13 @@ def _new_plan(db: Session, space: models.AppSpace, compute: str) -> models.Plan:
     try:
         values = catalog.fill_values(compute, ai_values)
     except ValueError:
-        try:
-            ai_values, values = None, catalog.fill_values(compute)
-        except ValueError as e:  # vm은 runtime·실행 명령에 기본값이 없어 AI 값이 있어야 한다
-            raise PlanUnavailable("AI 분석 값이 없어 구성안을 만들 수 없습니다. 먼저 분석해 주세요.") from e
+        ai_values, values = None, catalog.fill_values(compute)
+    # VM은 언어·실행 명령에 기본값이 없어서 분석이 찾지 못했으면 구성안을 만들 수 없다
+    if compute == "vm" and (missing := catalog.vm_missing(values)):
+        raise HTTPException(400, detail={
+            "error": "vm_values_missing",
+            "message": f"분석에서 {', '.join(missing)}을(를) 찾지 못해 VM에 배포할 수 없습니다. 다시 분석해 주세요.",
+        })
     if "container_port" not in (ai_values or {}):
         values.pop("container_port", None)
     if template is catalog.SHARED_ALB:
