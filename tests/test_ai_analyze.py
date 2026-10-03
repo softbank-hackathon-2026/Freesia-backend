@@ -207,7 +207,6 @@ def test_failed_has_no_template_values(repo_files, model):
 def test_template_fields_match_catalog():
     """양식의 이름이 catalog(= variables.tf)와 다르면 AI 값이 오류 없이 버려진다. 템플릿을 추가할 때 여기서 잡는다."""
     for compute, fields in TEMPLATE_FIELDS.items():
-        # vm은 등록만 하고 ready는 배포 연결 뒤에 켠다. 검사는 ready와 상관없이 쓴다
-        assert catalog.is_ready(compute) or compute == "vm", compute
-        assert set(catalog.TEMPLATES[compute].fill({})) == set(fields), compute
+        assert catalog.is_ready(compute), compute
+        assert set(catalog.fill_values(compute)) == set(fields), compute
     assert set(analyze.RESULT_SCHEMA["properties"]["template_values"]["required"]) == set(TEMPLATE_FIELDS)

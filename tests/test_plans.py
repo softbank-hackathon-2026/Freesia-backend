@@ -276,10 +276,9 @@ VM_DEFAULTS = {"runtime": None, "app_port": 8080, "health_check_path": "/", "bui
                "runtime_version": "21", "java_server": "none", "war_file": "target/*.war"}
 
 
-def test_vm_registered_but_not_ready():
-    """ready는 백엔드가 vm 배포를 deploy-vm.yml로 보내게 된 뒤에 켠다."""
-    assert not catalog.is_ready("vm")
-    assert catalog.TEMPLATES["vm"].fill({}) == VM_DEFAULTS
+def test_vm_defaults():
+    assert catalog.is_ready("vm")
+    assert catalog.fill_values("vm") == VM_DEFAULTS
 
 
 @pytest.mark.parametrize(
@@ -297,7 +296,7 @@ def test_vm_registered_but_not_ready():
 )
 def test_vm_out_of_range(raw):
     with pytest.raises(ValueError):
-        catalog.TEMPLATES["vm"].fill(raw)
+        catalog.fill_values("vm", raw)
 
 
 @pytest.mark.parametrize(
@@ -313,17 +312,14 @@ def test_vm_missing(values, missing):
     assert catalog.vm_missing(values) == missing
 
 
-def test_vm_plan_without_runtime_is_400(client, monkeypatch):
+def test_vm_plan_without_runtime_is_400(client):
     """분석이 언어·실행 명령을 찾지 못하면 기본값으로 대신할 수 없어 구성안을 만들지 않는다 (500이 아니라 400)."""
-    import dataclasses
-
     from fastapi import HTTPException
 
     from app import models
     from app.routers import app_spaces
     from tests.conftest import TestingSession
 
-    monkeypatch.setitem(catalog.TEMPLATES, "vm", dataclasses.replace(catalog.TEMPLATES["vm"], ready=True))
     space = create_space(client).json()
     with TestingSession() as db, pytest.raises(HTTPException) as e:
         app_spaces._new_plan(db, db.get(models.AppSpace, space["id"]), "vm")

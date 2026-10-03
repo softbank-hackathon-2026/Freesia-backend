@@ -76,7 +76,8 @@ TEMPLATE_FIELDS: dict[str, dict[str, dict[str, Any]]] = {
         "runtime": {
             "type": "string",
             "enum": VM_RUNTIMES,
-            "description": "앱 언어. 의존성 파일(requirements.txt·pyproject.toml / package.json / pom.xml·build.gradle)로 정합니다.",
+            "description": "앱 언어. 의존성 파일(requirements.txt·pyproject.toml / package.json / pom.xml·build.gradle)로 정합니다. "
+            "이 셋이 아니거나 여러 프로세스가 함께 떠야 하는 앱은 vm에 맞지 않습니다(unsuitable).",
         },
         "app_port": {
             "type": "integer",
@@ -87,14 +88,16 @@ TEMPLATE_FIELDS: dict[str, dict[str, dict[str, Any]]] = {
         "health_check_path": _HEALTH,
         "build_command": {
             "type": "string",
-            "description": "앱 폴더에서 한 번 실행할 설치·빌드 명령(한 줄). 예: npm ci && npm run build / "
-            "python3 -m venv .venv && .venv/bin/pip install -r requirements.txt / ./mvnw -q package -DskipTests. "
-            "필요 없으면 빈 문자열입니다.",
+            "description": "앱 폴더에서 한 번 실행할 설치·빌드 명령(한 줄). 필요 없으면 빈 문자열입니다. "
+            "Python은 VM이 시스템 전체 pip 설치를 막아서 반드시 venv를 씁니다: "
+            "python3 -m venv .venv && .venv/bin/pip install -r requirements.txt. "
+            "Node는 package.json에 dependencies가 있을 때만 npm ci --omit=dev(lock 파일이 없으면 npm install --omit=dev)입니다. "
+            "Java는 ./mvnw -q package -DskipTests처럼 빌드합니다.",
         },
         "start_command": {
             "type": "string",
             "description": "앱을 실행하는 명령(한 줄). systemd가 앱 폴더에서 실행하고 포그라운드로 계속 떠 있어야 합니다. "
-            "예: npm start / .venv/bin/gunicorn -b 0.0.0.0:$PORT app:app / java -jar target/app.jar. "
+            "예: node server.js / .venv/bin/python app.py / java -jar target/app.jar. "
             "build_command에서 만든 가상환경·빌드 결과 경로를 맞춰 씁니다. java_server=tomcat이면 빈 문자열입니다.",
         },
         "runtime_version": {

@@ -165,11 +165,10 @@ TEMPLATES: dict[str, Template] = {
         cons=["서버 1대라 장애나 재배포 때 잠깐 멈춤", "재배포하면 주소가 바뀜"],
     ),
     # 10/3 온프레미스. Terraform이 아니라 배포 레포 deploy-vm.yml(Ansible)이 실행한다. 이름은 폴더가 아니라 구분용.
-    # ready는 백엔드가 vm 배포를 deploy-vm.yml로 보내게 된 뒤에 켠다 (지금은 deploy.yml로만 보낸다)
     "vm": Template(
         compute="vm",
         name="vm",
-        ready=False,
+        ready=True,
         fill=_vm_values,
         plan_name="기본형",
         summary="온프레미스 VM에 언어 런타임을 설치하고 소스를 빌드해 서비스(systemd)로 실행하는 구성",
