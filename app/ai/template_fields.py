@@ -4,14 +4,14 @@
 이름을 똑같이 쓴다. 여기에는 AI에게 물을 것(타입, 고를 수 있는 값, 설명)만 두고, 범위 검사와 기본값은
 app/catalog.py가 한다. 템플릿이 catalog에 등록(ready)된 뒤 여기에 추가한다.
 온프레미스 vm은 Terraform이 아니라 배포 레포 ansible/playbooks/deploy.yml이고, 값 이름·범위는 scripts/vm_plan.py
-check_values를 따른다. catalog에 아직 없어서 검사는 여기 _vm_check가 한다.
+check_values를 따른다. catalog에서 아직 준비(ready) 전이라 검사는 여기 _vm_check가 한다.
 필드 순서는 fit_values가 값을 넣어 보는 순서라, 다른 값에 따라 범위가 바뀌는 값(Fargate memory)을 뒤에 둔다.
 enum은 템플릿이 허용하는 값을 그대로 옮길 때만 건다. 범위를 AI 쪽에서 좁히지 않는다 (상한은 catalog·템플릿이 정한다).
 """
 import logging
 from typing import Any
 
-from app.catalog import EC2_INSTANCE_TYPES, FARGATE_MEMORY, LAMBDA_MIN_PORT, PATH_RE, TEMPLATES, fill_values
+from app.catalog import EC2_INSTANCE_TYPES, FARGATE_MEMORY, LAMBDA_MIN_PORT, PATH_RE, fill_values, is_ready
 
 logger = logging.getLogger(__name__)
 
@@ -132,8 +132,8 @@ def _vm_check(raw: dict[str, Any]) -> None:
 
 
 def _check(compute: str, values: dict[str, Any]) -> None:
-    # catalog에 없는 컴퓨팅(vm)만 여기서 검사한다. catalog에 등록되면 catalog 검사로 바뀐다
-    if compute in TEMPLATES:
+    # catalog에서 준비되지 않은 컴퓨팅(vm)만 여기서 검사한다. catalog에서 ready가 켜지면 catalog 검사로 바뀐다
+    if is_ready(compute):
         fill_values(compute, values)
     else:
         _vm_check(values)
