@@ -21,6 +21,7 @@ def _to_schema(infra: models.InfraSpace, app_count: int) -> InfraSpace:
     # 계정 ID·VPC·서브넷은 배포용 내부 값이라 응답에 넣지 않는다 (API 명세 4절)
     return InfraSpace(
         id=infra.id,
+        provider=infra.provider,
         name=infra.name,
         description=infra.description,
         network=infra.network,

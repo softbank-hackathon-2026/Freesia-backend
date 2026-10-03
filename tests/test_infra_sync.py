@@ -417,3 +417,61 @@ def test_removing_tag_unhides_infra(client, sandbox):
     sandbox.vpcs["vpc-sb"]["tags"] = {"InfraId": SANDBOX_INFRA}
     infra_sync._next_run = 0.0
     assert SANDBOX_INFRA in {i["id"] for i in sync(client).json()}
+
+
+# 출처(provider): 어디서 읽었는지로 정한다. 새 클라우드는 Source 하나를 더하면 된다
+
+
+def test_provider_is_aws(client, sandbox):
+    got = {i["id"]: i for i in sync(client).json()}
+    assert {i["provider"] for i in got.values()} == {"aws"}  # Sandbox도 AWS
+    assert client.get(f"/api/infra-spaces/{PUBLIC}").json()["provider"] == "aws"
+
+
+GCP_INFRA = "freesia-gcp-vpc01"
+
+
+def gcp_source(found, broken=False):
+    """가짜 GCP 출처. 실제로 붙일 때도 이 모양으로 sources()에 더한다."""
+    def read():
+        if broken:
+            raise infra_sync.SourceError("GCP를 읽지 못했습니다.")
+        return [infra_sync.Found(i, "gcp-project", f"vpc-{i}", "asia-northeast3", {"InfraId": i},
+                                 ["sn-a", "sn-b"]) for i in found]
+    return infra_sync.Source("gcp:demo", "gcp", False, read, lambda row: row.provider == "gcp")
+
+
+@pytest.fixture
+def gcp(monkeypatch, aws):
+    state = {"found": [GCP_INFRA], "broken": False}
+    aws_sources = infra_sync.sources
+    monkeypatch.setattr(infra_sync, "sources",
+                        lambda: aws_sources() + [gcp_source(state["found"], state["broken"])])
+    return state
+
+
+def test_new_provider_appears_with_its_name(client, gcp):
+    got = {i["id"]: i for i in sync(client).json()}
+    assert got[GCP_INFRA]["provider"] == "gcp"
+    assert got[PUBLIC]["provider"] == "aws"
+
+
+def test_failed_optional_provider_keeps_its_infra(client, gcp):
+    sync(client)
+    gcp["broken"] = True
+    infra_sync._next_run = 0.0
+    got = {i["id"]: i for i in sync(client).json()}
+    assert got[GCP_INFRA]["status"] == "ready" and PUBLIC in got
+
+
+def test_vanished_infra_hidden_only_by_its_provider(client, gcp):
+    sync(client)
+    gcp["found"] = []
+    infra_sync._next_run = 0.0
+    ids = {i["id"] for i in sync(client).json()}
+    assert GCP_INFRA not in ids and PUBLIC in ids  # GCP에서 사라짐. AWS 인프라는 그대로
+
+
+def test_same_id_in_two_providers_stops_sync(client, gcp):
+    gcp["found"] = [PUBLIC]
+    assert sync(client).status_code == 502

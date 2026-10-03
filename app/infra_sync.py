@@ -1,14 +1,20 @@
-"""인프라 갱신: Workload·Sandbox 계정에서 InfraId 태그가 붙은 VPC를 읽어 infra_spaces를 채운다 (API 명세 4절).
+"""인프라 갱신: 인프라를 읽어 오는 곳(출처)마다 InfraId 태그가 붙은 인프라를 읽어 infra_spaces를 채운다 (API 명세 4절).
 
 인프라 관리자가 미리 만든 인프라를 플랫폼이 읽기만 한다. DB가 비어 있어도 갱신 한 번이면 배포에 쓸
 VPC·서브넷까지 들어간다. AWS에서 사라진 인프라는 지우지 않고 unavailable로 숨긴다 (그 인프라를 쓰는 앱이 있다).
 목록을 볼 때마다 갱신한다(refresh). AWS를 한 번 읽는 데 1초 안팎이라 화면이 기다릴 만하다 (10/2 서버에서 측정).
-Sandbox는 키가 있을 때만 읽는다. 한 계정을 못 읽으면 그 계정 인프라는 DB 값을 그대로 두고, 다른 계정은 갱신한다.
+Sandbox는 키가 있을 때만 읽는다. 한 출처를 못 읽으면 그 출처 인프라는 DB 값을 그대로 두고, 다른 출처는 갱신한다.
+
+출처(Source)는 지금 AWS 계정(Workload·Sandbox)뿐이다. 인프라마다 provider(aws / onprem / gcp / azure)를 저장하는데,
+태그가 아니라 어느 출처에서 읽었는지로 정한다. 새 클라우드를 붙일 때는 그 클라우드를 읽어 Found 목록을 돌려주는
+함수를 만들고 sources()에 Source 하나를 더하면 된다 (목록·상세 API, 사라진 인프라 숨기기는 그대로 동작한다).
 """
 import logging
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial
 
 from botocore.exceptions import BotoCoreError, ClientError
 from sqlalchemy import select
@@ -28,6 +34,7 @@ COOLDOWN_SECONDS = 5  # 한 화면이 거의 동시에 여러 번 불러도 AWS�
 RETRY_AFTER_FAILURE_SECONDS = 60  # AWS가 안 되면 목록 조회마다 기다리지 않게 잠시 쉰다
 NETWORKS = {"public", "db-isolated", "multi-az"}
 DEFAULT_COMPUTES = ["ecs-fargate", "lambda", "ec2"]
+PROVIDERS = ("aws", "onprem", "gcp", "azure")  # API 응답 provider 값. 지금 읽는 출처는 aws뿐이다
 
 # 화면 이름은 AWS에 없어서 여기 둔다. ADR-026에서 이름이 정해지면 바꾼다. VPC에 DisplayName·Description·
 # Network·Computes 태그가 있으면 태그가 우선이다. 표에도 태그에도 없으면 InfraId를 이름으로 쓴다.
@@ -57,9 +64,13 @@ class SyncError(Exception):
     """갱신 실패. 메시지는 화면에 그대로 보여 줄 수 있는 문장이다."""
 
 
+class SourceError(Exception):
+    """출처 하나를 읽지 못함 (키 없음, API 실패 등)."""
+
+
 @dataclass
 class Found:
-    """AWS에서 찾은 인프라 하나."""
+    """출처에서 찾은 인프라 하나. provider는 읽은 출처가 채운다 (읽는 함수가 정하지 않는다)."""
 
     id: str
     account_id: str
@@ -70,6 +81,23 @@ class Found:
     private_subnet_ids: list[str] = field(default_factory=list)
     app_subnet_ids: list[str] = field(default_factory=list)  # 프라이빗 중 db가 아닌 것 (shared-alb 앱 자리)
     alb: "SharedAlb | None" = None
+    provider: str = "aws"
+
+
+@dataclass(frozen=True)
+class Source:
+    """인프라를 읽어 오는 곳 하나 (예: AWS Workload 계정).
+
+    read: 인프라 목록을 돌려준다. 못 읽으면 SourceError.
+    owns: DB의 인프라가 이 출처에서 온 것인지. 이 출처를 읽었는데 없으면 사라진 것(unavailable)으로 본다.
+    required: 못 읽으면 갱신 전체를 멈출지. 아니면 그 출처만 빼고 갱신한다.
+    """
+
+    key: str
+    provider: str
+    required: bool
+    read: Callable[[], list["Found"]]
+    owns: Callable[[models.InfraSpace], bool]
 
 
 @dataclass
@@ -114,22 +142,51 @@ def refresh(db: Session) -> None:
         db.rollback()
 
 
-def discover() -> tuple[list[Found], list[str]]:
-    """(찾은 인프라, 읽은 계정). Workload를 못 읽으면 SyncError. Sandbox를 못 읽으면 경고만 남기고 빼고 돌려준다."""
+def sources() -> list[Source]:
+    """지금 읽을 출처 목록. AWS는 키가 있는 계정마다 하나 (Workload는 필수, Sandbox는 선택)."""
+    return [
+        Source(
+            key=f"aws:{account}",
+            provider="aws",
+            required=account == aws.WORKLOAD,
+            read=partial(_read_aws, account),
+            owns=partial(_owned_by_aws_account, account),
+        )
+        for account in aws.accounts()
+    ]
+
+
+def _owned_by_aws_account(account: str, row: models.InfraSpace) -> bool:
+    return row.provider == "aws" and aws.account_of(row.aws_account_id) == account
+
+
+def _read_aws(account: str) -> list["Found"]:
+    try:
+        return _discover_account(account)
+    except WorkloadKeyMissing as e:
+        raise SourceError(f"{account} 키가 설정되지 않아 인프라를 읽을 수 없습니다.") from e
+    except (BotoCoreError, ClientError) as e:
+        raise SourceError(f"AWS({account})에서 인프라를 읽지 못했습니다.") from e
+
+
+def discover() -> tuple[list[Found], list[Source]]:
+    """(찾은 인프라, 읽은 출처). 필수 출처를 못 읽으면 SyncError, 선택 출처는 경고만 남기고 빼고 돌려준다."""
     result, read = [], []
-    for account in aws.accounts():
+    for source in sources():
         try:
-            result += _discover_account(account)
-            read.append(account)
-        except WorkloadKeyMissing as e:
-            raise SyncError("Workload 키가 설정되지 않아 인프라를 읽을 수 없습니다.") from e
-        except (BotoCoreError, ClientError) as e:
-            logger.warning("인프라 갱신 실패 (%s): %s", account, e)
-            if account == aws.WORKLOAD:
-                raise SyncError("AWS에서 인프라를 읽지 못했습니다.") from e
+            found = source.read()
+        except SourceError as e:
+            logger.warning("인프라 갱신 실패 (%s): %s", source.key, e.__cause__ or e)
+            if source.required:
+                raise SyncError(str(e)) from e
+            continue
+        for f in found:
+            f.provider = source.provider
+        result += found
+        read.append(source)
     ids = [f.id for f in result]
     if len(ids) != len(set(ids)):
-        raise SyncError("같은 InfraId가 붙은 VPC가 여러 개라 갱신하지 않았습니다.")
+        raise SyncError("같은 InfraId가 붙은 인프라가 여러 개라 갱신하지 않았습니다.")
     return result, read
 
 
@@ -226,10 +283,10 @@ def split_subnets(subnets: list[dict], tables: list[dict]) -> tuple[list[str], l
     )
 
 
-def apply(db: Session, found: list[Found], read: list[str] = (aws.WORKLOAD,)) -> None:
-    """찾은 인프라는 넣거나 고치고, 읽은 계정(read)에서 사라진 인프라는 unavailable로 숨긴다.
+def apply(db: Session, found: list[Found], read: list[Source]) -> None:
+    """찾은 인프라는 넣거나 고치고, 읽은 출처(read)에서 사라진 인프라는 unavailable로 숨긴다.
 
-    못 읽은 계정의 인프라는 그대로 둔다 (Sandbox 키가 잠깐 안 돼도 Sandbox 인프라가 목록에서 사라지지 않게).
+    못 읽은 출처의 인프라는 그대로 둔다 (Sandbox 키가 잠깐 안 돼도 Sandbox 인프라가 목록에서 사라지지 않게).
     """
     seen = set()
     for f in found:
@@ -239,6 +296,7 @@ def apply(db: Session, found: list[Found], read: list[str] = (aws.WORKLOAD,)) ->
         if row is None:
             row = models.InfraSpace(id=f.id, created_at=now())
             db.add(row)
+        row.provider = f.provider
         row.name, row.description = info["name"], info["description"]
         row.network, row.computes = info["network"], info["computes"]
         row.aws_account_id, row.region, row.vpc_id = f.account_id, f.region, f.vpc_id
@@ -251,7 +309,7 @@ def apply(db: Session, found: list[Found], read: list[str] = (aws.WORKLOAD,)) ->
         # 로드밸런서는 서로 다른 AZ의 퍼블릭 서브넷 2개 이상이 있어야 만들 수 있다
         row.status = "ready" if len(f.public_subnet_ids) >= 2 else "preparing"
     for row in db.scalars(select(models.InfraSpace).where(models.InfraSpace.id.not_in(seen))):
-        if aws.account_of(row.aws_account_id) in read:
+        if any(source.owns(row) for source in read):
             row.status = "unavailable"
 
 
