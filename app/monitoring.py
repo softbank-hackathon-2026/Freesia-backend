@@ -4,7 +4,7 @@ AWS 자원 이름은 배포 레포 템플릿(ecs-fargate·lambda·ec2/basic)이 
 컴퓨팅마다 지표 종류가 다르다. 응답 칸은 같게 두고, 그 컴퓨팅에 없는 값은 None이다 (10/2 김동윤 님과 맞춤).
 - ecs-fargate: CPU·메모리(%), 로드밸런서 응답 시간·요청 수·5xx 수, 로그
 - lambda: 처리 시간(평균)·호출 수·오류 수, 로그
-- ec2: CPU(%)만. 메모리는 CloudWatch 에이전트가 없어서, 로그는 템플릿이 CloudWatch로 보내지 않아서 없다
+- ec2: CPU(%), 로그. 메모리는 CloudWatch 에이전트가 없어서 없다
 키는 WORKLOAD_AWS_* 설정으로 클라이언트를 따로 만든다. 기본 자격증명(ECS 작업 역할)은 Bedrock 호출에 쓴다.
 """
 import logging
@@ -58,12 +58,22 @@ def ec2_instance_name(app_id: str) -> str:
 
 
 def log_group(app_id: str, compute: str) -> str | None:
-    """앱 로그가 있는 CloudWatch 로그 그룹. 로그를 모으지 않는 컴퓨팅이면 None."""
+    """앱 로그가 있는 CloudWatch 로그 그룹. 모르는 컴퓨팅이면 None."""
     if compute == "ecs-fargate":
         return names(app_id).log_group
     if compute == "lambda":
         return f"/aws/lambda/{lambda_function(app_id)}"
+    if compute == "ec2":  # templates/ec2/basic: Docker awslogs 드라이버로 보낸다
+        return f"/ec2/{PREFIX}-{app_id}"
     return None
+
+
+def log_stream_prefix(compute: str, deployment_id: str) -> str | None:
+    """현재 배포의 스트림만 고르는 접두어. EC2 스트림은 <deployment_id>/<instance_id>/app이다.
+
+    EC2는 재배포하면 서버를 새로 만들어 스트림도 새로 생긴다. 접두어가 없으면 내린 서버의 로그가 섞인다.
+    """
+    return f"{deployment_id}/" if compute == "ec2" else None
 
 
 def live_deployment(space: models.AppSpace, dep: models.Deployment | None) -> models.Deployment | None:
@@ -104,10 +114,10 @@ def get_metrics(app_id: str, compute: str) -> dict:
     return _cached(("metrics", app_id, compute), lambda: _fetch_metrics(app_id, compute))
 
 
-def get_logs(app_id: str, compute: str, limit: int) -> list[dict]:
-    """최근 로그 줄. 오래된 것부터. 로그를 모으지 않는 컴퓨팅은 부르지 않는다 (log_group이 None)."""
-    group = log_group(app_id, compute)
-    return _cached(("logs", app_id, compute, limit), lambda: _fetch_logs(group, limit))
+def get_logs(app_id: str, compute: str, deployment_id: str, limit: int) -> list[dict]:
+    """최근 로그 줄. 오래된 것부터. 모르는 컴퓨팅은 부르지 않는다 (log_group이 None)."""
+    group, prefix = log_group(app_id, compute), log_stream_prefix(compute, deployment_id)
+    return _cached(("logs", app_id, compute, deployment_id, limit), lambda: _fetch_logs(group, prefix, limit))
 
 
 def _fetch_metrics(app_id: str, compute: str) -> dict:
@@ -216,13 +226,18 @@ def _load_balancer_dimension(name: str) -> str | None:
     return lbs[0]["LoadBalancerArn"].split(":loadbalancer/", 1)[1] if lbs else None
 
 
-def _fetch_logs(group: str, limit: int) -> list[dict]:
+def _fetch_logs(group: str, stream_prefix: str | None, limit: int) -> list[dict]:
     logs = _client("logs")
     since = int((datetime.now(timezone.utc) - LOGS_WINDOW).timestamp() * 1000)
     try:
-        streams = logs.describe_log_streams(
-            logGroupName=group, orderBy="LastEventTime", descending=True, limit=3
-        )["logStreams"]
+        if stream_prefix:  # AWS는 접두어와 LastEventTime 정렬을 같이 쓸 수 없다. 배포 하나에 서버 하나라 스트림이 적다
+            streams = logs.describe_log_streams(
+                logGroupName=group, logStreamNamePrefix=stream_prefix, limit=3
+            )["logStreams"]
+        else:
+            streams = logs.describe_log_streams(
+                logGroupName=group, orderBy="LastEventTime", descending=True, limit=3
+            )["logStreams"]
         events = []
         for stream in streams:  # Task·Lambda 실행 환경이 바뀌면 스트림도 바뀐다. 최근 스트림 몇 개를 합친다
             r = logs.get_log_events(
