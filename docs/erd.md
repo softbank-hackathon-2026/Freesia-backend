@@ -17,6 +17,7 @@ erDiagram
 
     infra_spaces {
         varchar id PK "InfraId 태그 값"
+        varchar provider "aws / onprem / gcp / azure (읽은 출처)"
         varchar name
         varchar description
         varchar network "public / private / ha"

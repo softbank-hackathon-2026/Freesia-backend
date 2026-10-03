@@ -55,6 +55,9 @@ class InfraSpace(BaseModel):
     """인프라 관리자가 미리 만들어 둔 인프라 (건물). 플랫폼은 조회만 한다."""
 
     id: str = Field(examples=["sbh-workload-demo-vpc-public01"])
+    provider: Literal["aws", "onprem", "gcp", "azure"] = Field(
+        "aws", description="어디서 읽어 온 인프라인지. 지금은 aws만 나온다 (onprem·gcp·azure는 그쪽을 읽게 되면)"
+    )
     name: str = Field(examples=["공개 웹 서비스용"])
     description: str
     network: Literal["public", "db-isolated", "multi-az", "private", "ha"] = Field(

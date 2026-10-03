@@ -12,6 +12,8 @@ class InfraSpace(Base):
 
     # AWS 자원의 InfraId 태그와 같은 값 ("AWS 리소스 네이밍 및 태깅 규칙")
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # 어디서 읽어 온 인프라인지: aws / onprem / gcp / azure. 태그가 아니라 읽은 출처로 정한다 (app/infra_sync.py)
+    provider: Mapped[str] = mapped_column(String(20), default="aws", server_default="aws")
     name: Mapped[str] = mapped_column(String(100))
     description: Mapped[str] = mapped_column(String(300))
     network: Mapped[str] = mapped_column(String(20))
