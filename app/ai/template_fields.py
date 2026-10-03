@@ -89,8 +89,9 @@ TEMPLATE_FIELDS: dict[str, dict[str, dict[str, Any]]] = {
         "build_command": {
             "type": "string",
             "description": "앱 폴더에서 한 번 실행할 설치·빌드 명령(한 줄). 필요 없으면 빈 문자열입니다. "
-            "Python은 VM이 시스템 전체 pip 설치를 막아서 반드시 venv를 씁니다: "
-            "python3 -m venv .venv && .venv/bin/pip install -r requirements.txt. "
+            "Python은 VM이 시스템 전체 pip 설치를 막아서 반드시 venv를 씁니다. 실제로 있는 의존성 파일에 맞춥니다: "
+            "requirements.txt가 있으면 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt, "
+            "pyproject.toml만 있으면 python3 -m venv .venv && .venv/bin/pip install . 입니다. "
             "Node는 package.json에 dependencies가 있을 때만 npm ci --omit=dev(lock 파일이 없으면 npm install --omit=dev)입니다. "
             "Java는 ./mvnw -q package -DskipTests처럼 빌드합니다.",
         },

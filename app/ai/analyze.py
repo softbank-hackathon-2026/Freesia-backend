@@ -31,6 +31,7 @@ SYSTEM_PROMPT = """\
 - 후보는 요청의 computes에 있는 값만 쓰고, computes의 컴퓨팅을 하나도 빠뜨리지 않고 한 번씩 모두 후보에 넣습니다.
 - state는 selected(추천) 정확히 1개, alternative(가능한 대안), unsuitable(비추천) 중 하나입니다. selected를 목록 맨 앞에 둡니다.
 - unsuitable을 뺀 후보가 2~3개 남아야 합니다. computes가 2개뿐이면 둘 다 selected와 alternative로 두고, 약한 쪽의 단점은 cons에 적습니다. computes가 1개면 그 하나를 selected로 둡니다.
+- 저장소에 Dockerfile이 없으면 vm 말고는 배포할 수 없으므로 vm 외 컴퓨팅은 unsuitable로 둡니다. 이때는 unsuitable을 뺀 후보가 1개여도 됩니다.
 - 모든 후보에 reason, cons, evidence_files를 채웁니다. 선택되지 않은 후보도 마찬가지입니다.
 - evidence에는 파일에서 실제로 읽은 사실만 씁니다. file은 제공된 파일 경로 중 하나여야 합니다. 파일에서 확인했으면 certain=true, 추정이면 false입니다.
 - evidence_files에는 evidence[].file에 있는 경로만 씁니다.
@@ -139,7 +140,7 @@ def _ask(stage: int, paths: list[str], files: dict[str, str], missing: list[str]
     try:
         text = _converse(_system_prompt(), build_prompt(stage, paths, files, missing, computes))
         out = ModelOutput.model_validate_json(_extract_json(text))
-        validate(out, paths, computes)
+        validate(out, paths, computes, missing)
         return out
     except (BotoCoreError, ClientError, ValueError):  # pydantic 검증 오류도 ValueError
         logger.exception("분석 %d단계 실패 (모델 응답 앞부분: %s)", stage, text[:500])
@@ -160,7 +161,7 @@ def build_prompt(stage: int, paths: list[str], files: dict[str, str], missing: l
     )
 
 
-def validate(r: ModelOutput, paths: list[str], computes: list[str]) -> None:
+def validate(r: ModelOutput, paths: list[str], computes: list[str], missing: list[str]) -> None:
     """ADR-020·021 검증 규칙(V1~V9). 어기면 AnalysisValidationError. 일부만 고쳐 쓰지 않는다."""
 
     def check(ok, rule: str) -> None:
@@ -175,7 +176,9 @@ def validate(r: ModelOutput, paths: list[str], computes: list[str]) -> None:
     evidence_files = {e.file for e in r.evidence}
     check(sorted(c.compute for c in r.candidates) == sorted(computes), "V2·V3 후보는 computes와 같아야 함")
     check(states[:1] == ["selected"] and states.count("selected") == 1, "V4 selected는 1개이고 맨 앞")
-    check(min(2, len(computes)) <= len([s for s in states if s != "unsuitable"]) <= 3, "V5 unsuitable을 뺀 후보는 2~3개(computes가 1개면 1개)")
+    # 컴퓨팅이 1개거나, Dockerfile이 없어 vm만 배포할 수 있으면 1개도 된다
+    low = 1 if len(computes) == 1 or "Dockerfile" in missing else 2
+    check(low <= len([s for s in states if s != "unsuitable"]) <= 3, "V5 unsuitable을 뺀 후보는 2~3개(배포할 수 있는 컴퓨팅이 1개면 1개)")
     check(evidence_files <= set(paths), "V6 evidence[].file은 읽은 파일만")
     check(all(set(c.evidence_files) <= evidence_files for c in r.candidates), "V7 evidence_files는 evidence[].file 중에서")
     check(r.requirements and r.evidence, "V9 done이면 requirements와 evidence가 1개 이상")

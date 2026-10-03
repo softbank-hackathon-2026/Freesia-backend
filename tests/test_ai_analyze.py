@@ -92,6 +92,18 @@ def test_vm_analyzes_without_dockerfile(repo_files, model):
     assert [c.compute for c in result.candidates] == ["vm"] and result.template_values["vm"] == VM_GOOD
 
 
+@pytest.mark.parametrize("has_dockerfile,status", [(False, "done"), (True, "failed")])
+def test_mixed_computes_without_dockerfile(repo_files, model, has_dockerfile, status):
+    """vm과 컨테이너 방식이 섞인 인프라. Dockerfile이 없으면 vm만 배포할 수 있어 컨테이너 후보는 unsuitable이어도 된다.
+    Dockerfile이 있으면 지금처럼 unsuitable을 뺀 후보가 2개 이상이어야 한다."""
+    if not has_dockerfile:
+        del repo_files["Dockerfile"]
+    evidence = [{"file": "package.json", "finding": "Node 앱", "certain": True}]
+    model(output(evidence=evidence, candidates=[cand("vm", "selected", ["package.json"]), cand("ecs-fargate", "unsuitable")]))
+    result, _ = run_analysis(URL, "main", ["vm", "ecs-fargate"])
+    assert result.status == status
+
+
 def test_repo_error_is_failed(monkeypatch):
     def broken(url, branch):
         raise RepoError("저장소나 브랜치를 찾을 수 없어요.")
