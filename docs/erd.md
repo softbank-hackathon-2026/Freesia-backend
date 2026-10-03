@@ -52,6 +52,8 @@ erDiagram
         timestamptz teardown_finished_at
         varchar teardown_reason
         timestamptz deleted_at
+        varchar route_path
+        int alb_rule_priority
         timestamptz created_at
     }
 
@@ -178,6 +180,8 @@ erDiagram
 | `teardown_finished_at` | timestamptz | | | 내리기 콜백을 받은 시각 |
 | `teardown_reason` | varchar(1000) | | | 내리기 실패 이유 |
 | `deleted_at` | timestamptz | | | 앱 삭제(목록에서 숨기기) 시각. 있으면 목록·상세·`app_count`에서 빠진다. 기록은 남긴다 (마이그레이션 0007) |
+| `route_path` | varchar(100) | | | 공용 ALB 뒤에 붙을 때 받을 경로(`/api`, `/`). 같은 인프라의 살아 있는 앱끼리 겹치면 안 됨 (마이그레이션 0008) |
+| `alb_rule_priority` | int | | | 공용 ALB 리스너 규칙 번호. 구체 경로 100번대, `/` 1000번대. 처음 배포할 때 정하고 다시 쓰지 않음 (0008) |
 | `created_at` | timestamptz | | O | |
 
 ### analyses (AI 견적) · 구현됨

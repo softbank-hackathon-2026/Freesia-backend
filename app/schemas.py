@@ -98,6 +98,13 @@ class AppSpaceCreate(BaseModel):
     )
     branch: Annotated[str, AfterValidator(normalize_branch)] = Field("main", min_length=1, max_length=255)
     infra_id: str = Field(examples=["sbh-workload-demo-vpc-public01"])
+    route_path: str | None = Field(
+        None,
+        pattern=r"^/(?:[a-z0-9-]+(?:/[a-z0-9-]+)*)?$",
+        max_length=100,
+        examples=["/api"],
+        description="공용 ALB 뒤에 붙을 때 이 앱이 받을 경로. `/`는 나머지 전부. 같은 인프라에서 겹치면 409",
+    )
 
 
 class AppSpace(BaseModel):
@@ -110,6 +117,8 @@ class AppSpace(BaseModel):
     infra_id: str
     created_at: UtcDatetime
     latest_deployment_id: str | None = None
+    route_path: str | None = Field(None, description="공용 ALB 경로. 공용 ALB를 안 쓰면 null")
+    alb_rule_priority: int | None = Field(None, description="공용 ALB 리스너 규칙 번호. 처음 배포할 때 백엔드가 정한다")
     teardown_status: TeardownStatus | None = Field(None, description="내리기 상태. 없으면 내린 적 없음")
     teardown_requested_at: UtcDatetime | None = Field(None, description="내리기를 요청한 시각")
     teardown_finished_at: UtcDatetime | None = Field(None, description="내리기가 끝난 시각 (success·failed)")

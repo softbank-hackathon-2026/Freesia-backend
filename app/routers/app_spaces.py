@@ -7,7 +7,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import analysis, catalog, deploy, github, models, signing
+from app import alb_rules, analysis, catalog, deploy, github, models, signing
 from app.config import get_settings
 from app.db import get_db
 from app.ids import new_id, now
@@ -107,6 +107,11 @@ def create_app_space(body: AppSpaceCreate, db: Session = Depends(get_db)) -> mod
     infra = db.get(models.InfraSpace, body.infra_id)
     if infra is None or infra.status == "unavailable":
         raise HTTPException(400, detail={"error": "infra_not_found", "message": "없거나 사용할 수 없는 인프라입니다."})
+    if body.route_path is not None:
+        try:
+            alb_rules.check_route(db, body.infra_id, body.route_path)
+        except alb_rules.RouteConflict as e:
+            raise HTTPException(409, detail={"error": "route_path_taken", "message": str(e)}) from e
     repo = db.scalar(
         select(models.Repository).where(
             models.Repository.repo_url == body.repo_url, models.Repository.branch == body.branch
@@ -119,6 +124,7 @@ def create_app_space(body: AppSpaceCreate, db: Session = Depends(get_db)) -> mod
         repo_url=body.repo_url,
         branch=body.branch,
         infra_id=body.infra_id,
+        route_path=body.route_path,
         created_at=now(),
     )
     db.add(space)
