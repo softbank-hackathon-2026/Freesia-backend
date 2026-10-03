@@ -82,6 +82,28 @@ def test_no_dockerfile_skips_model(repo_files, model):
     assert (result.status, result.mascot_message, sha, prompts) == ("failed", NO_DOCKERFILE_MESSAGE, SHA, [])
 
 
+def test_vm_analyzes_without_dockerfile(repo_files, model):
+    """온프레미스 vm은 소스를 직접 빌드해서 Dockerfile이 없어도 모델을 부른다. 후보가 vm 하나라도 통과한다."""
+    del repo_files["Dockerfile"]
+    evidence = [{"file": "package.json", "finding": "Node 앱", "certain": True}]
+    prompts = model(output(evidence=evidence, candidates=[cand("vm", "selected", ["package.json"])], template_values={"vm": VM_GOOD}))
+    result, _ = run_analysis(URL, "main", ["vm"])
+    assert (result.status, len(prompts)) == ("done", 1)
+    assert [c.compute for c in result.candidates] == ["vm"] and result.template_values["vm"] == VM_GOOD
+
+
+@pytest.mark.parametrize("has_dockerfile,status", [(False, "done"), (True, "failed")])
+def test_mixed_computes_without_dockerfile(repo_files, model, has_dockerfile, status):
+    """vm과 컨테이너 방식이 섞인 인프라. Dockerfile이 없으면 vm만 배포할 수 있어 컨테이너 후보는 unsuitable이어도 된다.
+    Dockerfile이 있으면 지금처럼 unsuitable을 뺀 후보가 2개 이상이어야 한다."""
+    if not has_dockerfile:
+        del repo_files["Dockerfile"]
+    evidence = [{"file": "package.json", "finding": "Node 앱", "certain": True}]
+    model(output(evidence=evidence, candidates=[cand("vm", "selected", ["package.json"]), cand("ecs-fargate", "unsuitable")]))
+    result, _ = run_analysis(URL, "main", ["vm", "ecs-fargate"])
+    assert result.status == status
+
+
 def test_repo_error_is_failed(monkeypatch):
     def broken(url, branch):
         raise RepoError("저장소나 브랜치를 찾을 수 없어요.")
@@ -116,6 +138,12 @@ def test_validation_violation_is_failed(repo_files, model, over):
     assert (result.status, result.mascot_message, result.candidates) == ("failed", FAIL_MESSAGE, [])
 
 
+def test_single_compute_passes(repo_files, model):
+    model(output(candidates=[cand("ecs-fargate", "selected", ["Dockerfile"])]))
+    result, _ = run_analysis(URL, "main", ["ecs-fargate"])
+    assert result.status == "done" and [c.compute for c in result.candidates] == ["ecs-fargate"]
+
+
 def test_bedrock_error_is_failed(repo_files, monkeypatch):
     from botocore.exceptions import ClientError
 
@@ -130,6 +158,10 @@ def test_bedrock_error_is_failed(repo_files, monkeypatch):
 # 템플릿 값 (ADR-012). 틀린 칸만 버리고 분석은 그대로 쓴다. 기본값은 구성안을 만들 때 채운다
 
 GOOD = {"container_port": 3000, "health_check_path": "/health", "cpu": 256, "memory": 512}
+LAMBDA_GOOD = {"container_port": 3000, "health_check_path": "/health", "memory": 512, "timeout": 30}
+EC2_GOOD = {"container_port": 3000, "health_check_path": "/health", "instance_type": "t3.micro"}
+VM_GOOD = {"runtime": "node", "app_port": 3000, "health_check_path": "/health", "build_command": "npm ci",
+           "start_command": "npm start", "runtime_version": "21", "java_server": "none", "war_file": "target/*.war"}
 
 
 def without(values, *names):
@@ -137,34 +169,44 @@ def without(values, *names):
 
 
 def test_template_values_saved(repo_files, model):
-    model(output(template_values={"ecs-fargate": GOOD}))
+    values = {"ecs-fargate": GOOD, "lambda": LAMBDA_GOOD, "ec2": EC2_GOOD, "vm": VM_GOOD}
+    model(output(template_values=values))
     result, _ = run_analysis(URL, "main", COMPUTES)
-    assert result.template_values == {"ecs-fargate": GOOD}
+    assert result.template_values == values
 
 
 @pytest.mark.parametrize(
-    "given,expected",
+    "compute,given,expected",
     [
-        ({**GOOD, "memory": 4096}, without(GOOD, "memory")),  # cpu 256에 없는 memory만 버리고 포트는 지킨다
-        ({**GOOD, "cpu": 1024, "memory": 512}, {**without(GOOD, "memory"), "cpu": 1024}),  # cpu 1024에 없는 memory
-        ({**GOOD, "cpu": 2048}, without(GOOD, "cpu")),  # 템플릿 밖 cpu
-        ({**GOOD, "container_port": "3000"}, without(GOOD, "container_port")),
-        ({**GOOD, "health_check_path": "health"}, without(GOOD, "health_check_path")),
-        ({"port": 3000}, {}),  # 모르는 이름은 무시된다
-        ("모양이 틀림", {}),
+        ("ecs-fargate", {**GOOD, "memory": 4096}, without(GOOD, "memory")),  # cpu 256에 없는 memory만 버리고 포트는 지킨다
+        ("ecs-fargate", {**GOOD, "cpu": 1024, "memory": 512}, {**without(GOOD, "memory"), "cpu": 1024}),  # cpu 1024에 없는 memory
+        ("ecs-fargate", {**GOOD, "cpu": 2048}, without(GOOD, "cpu")),  # 템플릿 밖 cpu
+        ("ecs-fargate", {**GOOD, "container_port": "3000"}, without(GOOD, "container_port")),
+        ("ecs-fargate", {**GOOD, "health_check_path": "health"}, without(GOOD, "health_check_path")),
+        ("ecs-fargate", {"port": 3000}, {}),  # 모르는 이름은 무시된다
+        ("ecs-fargate", "모양이 틀림", {}),
+        ("lambda", {**LAMBDA_GOOD, "container_port": 80}, without(LAMBDA_GOOD, "container_port")),  # Lambda는 1024 미만 포트를 못 연다
+        ("ec2", {**EC2_GOOD, "instance_type": "t2.micro"}, without(EC2_GOOD, "instance_type")),  # 템플릿 밖 서버 크기
+        # vm은 배포 레포 vm_plan.py check_values 규칙
+        ("vm", {**VM_GOOD, "app_port": 80}, without(VM_GOOD, "app_port")),  # 일반 사용자라 1024 미만 포트를 못 연다
+        ("vm", {**VM_GOOD, "runtime": "ruby"}, without(VM_GOOD, "runtime")),
+        ("vm", {**VM_GOOD, "runtime_version": "11"}, without(VM_GOOD, "runtime_version")),
+        ("vm", {**VM_GOOD, "start_command": "npm start\nrm -rf /"}, without(VM_GOOD, "start_command")),  # 한 줄만
+        ("vm", {**VM_GOOD, "build_command": None}, without(VM_GOOD, "build_command")),
+        ("vm", {**VM_GOOD, "health_check_path": "health"}, without(VM_GOOD, "health_check_path")),
     ],
 )
-def test_wrong_template_values_fall_back_per_field(repo_files, model, given, expected):
-    model(output(template_values={"ecs-fargate": given}))
+def test_wrong_template_values_fall_back_per_field(repo_files, model, compute, given, expected):
+    model(output(template_values={compute: given}))
     result, _ = run_analysis(URL, "main", COMPUTES)
-    assert result.status == "done" and result.template_values["ecs-fargate"] == expected
+    assert result.status == "done" and result.template_values[compute] == expected
 
 
 @pytest.mark.parametrize("over", [{}, {"template_values": ["모양이 틀림"]}])
 def test_missing_template_values_are_empty(repo_files, model, over):
     model(output(**over))
     result, _ = run_analysis(URL, "main", COMPUTES)
-    assert result.status == "done" and result.template_values == {"ecs-fargate": {}}
+    assert result.status == "done" and result.template_values == {compute: {} for compute in TEMPLATE_FIELDS}
 
 
 def test_failed_has_no_template_values(repo_files, model):

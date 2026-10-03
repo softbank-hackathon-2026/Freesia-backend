@@ -13,7 +13,7 @@ from sqlalchemy import create_engine  # noqa: E402
 from sqlalchemy.orm import sessionmaker  # noqa: E402
 from sqlalchemy.pool import StaticPool  # noqa: E402
 
-from app import deploy, github, models  # noqa: E402
+from app import deploy, github, infra_sync, models  # noqa: E402
 from app.db import Base, SessionLocal, get_db  # noqa: E402
 from app.main import app  # noqa: E402
 from app.routers import deployments  # noqa: E402
@@ -46,12 +46,17 @@ def _db(monkeypatch):
                     computes=computes,
                     status="ready",
                     vpc_id=vpc_id,
+                    # 배포 가능한 인프라는 서로 다른 AZ의 퍼블릭 서브넷 2개가 있다 (infra_spaces.is_deployable)
+                    public_subnet_ids=["subnet-a", "subnet-c"] if vpc_id else None,
                     created_at=base + timedelta(seconds=i),
                 )
             )
         db.commit()
     # 가짜 진행과 SSE가 기다리지 않게 한다. 끝나지 않은 배포의 SSE도 0.5초 뒤에 닫힌다.
     monkeypatch.setattr(deploy, "STEP_INTERVAL_SECONDS", 0)
+    # 인프라 갱신은 서버(프로세스)마다 기억하는 값이라 테스트마다 비운다
+    monkeypatch.setattr(infra_sync, "_next_run", 0.0)
+    monkeypatch.setattr(infra_sync, "_last_error", None)
     monkeypatch.setattr(deployments, "POLL_SECONDS", 0.01)
     monkeypatch.setattr(deployments, "STREAM_MAX_SECONDS", 0.5)
     yield
@@ -64,18 +69,30 @@ FAKE_SHA = "c" * 40
 @pytest.fixture(autouse=True)
 def gh(monkeypatch):
     """가짜 GitHub. 테스트가 진짜 GitHub을 부르지 않게 한다.
-    보낸 요청은 requests에 쌓이고, commit_status·dispatch_status로 응답 코드를 바꾼다."""
-    state = {"requests": [], "commit_status": 200, "dispatch_status": 204}
+    보낸 요청은 requests에 쌓이고, commit_status·dispatch_status로 응답 코드를 바꾼다.
+    templates에 {"ecs-fargate/basic": {"main.tf": "..."}}를 넣으면 배포 레포 템플릿으로 돌려준다 (없으면 404)."""
+    state = {"requests": [], "commit_status": 200, "dispatch_status": 204, "templates": {}}
 
     def handler(req: httpx.Request) -> httpx.Response:
         state["requests"].append(req)
         if "/commits/" in req.url.path:
             return httpx.Response(state["commit_status"], text=FAKE_SHA)
+        if "/contents/templates/" in req.url.path:
+            path = req.url.path.split("/contents/", 1)[1]
+            for name, files in state["templates"].items():
+                if path == f"templates/{name}":
+                    return httpx.Response(200, json=[
+                        {"name": f, "path": f"{path}/{f}", "type": "file"} for f in files
+                    ])
+                if path.startswith(f"templates/{name}/"):
+                    return httpx.Response(200, text=files[path.rsplit("/", 1)[1]])
+            return httpx.Response(404, json={"message": "Not Found"})
         if state["dispatch_status"] == 204:
             return httpx.Response(204)
         return httpx.Response(state["dispatch_status"], json={"message": "fake"})
 
     monkeypatch.setattr(github, "TRANSPORT", httpx.MockTransport(handler))
+    monkeypatch.setattr(github, "_template_cache", {})
     return state
 
 

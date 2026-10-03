@@ -30,10 +30,10 @@ def signed_get(client, plan_id, secret=SECRET):
 # 템플릿 목록
 
 
-def test_only_fargate_is_deployable_for_now(client):
+def test_all_three_computes_are_deployable(client):
     infra = client.get(f"/api/infra-spaces/{PUBLIC}").json()
     assert infra["computes"] == ["ecs-fargate", "lambda", "ec2"]  # AI는 셋을 비교한다
-    assert infra["deployable_computes"] == ["ecs-fargate"]  # 배포는 템플릿이 있는 것만
+    assert infra["deployable_computes"] == ["ecs-fargate", "lambda", "ec2"]  # 10/2 Lambda·EC2 템플릿 추가
 
 
 def test_defaults_match_template():
@@ -70,9 +70,66 @@ def test_out_of_range_values_are_rejected(raw):
         catalog.fill_values("ecs-fargate", raw)
 
 
-def test_not_ready_template_cannot_be_filled():
+@pytest.fixture
+def lambda_not_ready(monkeypatch):
+    """템플릿이 아직 없는 컴퓨팅. 지금은 셋 다 준비돼서 Lambda를 잠시 준비 중으로 돌린다."""
+    monkeypatch.setitem(catalog.TEMPLATES, "lambda", catalog.Template(compute="lambda", name=None, ready=False))
+
+
+def test_not_ready_template_cannot_be_filled(lambda_not_ready):
     with pytest.raises(ValueError):
         catalog.fill_values("lambda")
+
+
+# Lambda·EC2 (10/2 박소정 님 템플릿, 배포 레포 templates/<이름>/variables.tf)
+
+
+def test_lambda_and_ec2_defaults():
+    assert catalog.fill_values("lambda") == {
+        "container_port": 8080, "memory": 512, "timeout": 30, "health_check_path": "/",
+    }
+    assert catalog.fill_values("ec2") == {"container_port": 80, "instance_type": "t3.micro", "health_check_path": "/"}
+    assert (catalog.TEMPLATES["lambda"].name, catalog.TEMPLATES["ec2"].name) == ("lambda/basic", "ec2/basic")
+
+
+@pytest.mark.parametrize(
+    "compute,raw",
+    [
+        ("lambda", {"container_port": 80}),  # Lambda는 1024 미만 포트를 못 연다
+        ("lambda", {"memory": 64}),
+        ("lambda", {"memory": 10241}),
+        ("lambda", {"timeout": 0}),
+        ("lambda", {"timeout": 901}),
+        ("lambda", {"health_check_path": "health"}),
+        ("ec2", {"instance_type": "t3.large"}),
+        ("ec2", {"container_port": 70000}),
+        ("ec2", {"cpu": 256, "instance_type": True}),
+    ],
+)
+def test_lambda_and_ec2_out_of_range(compute, raw):
+    with pytest.raises(ValueError):
+        catalog.fill_values(compute, raw)
+
+
+@pytest.mark.parametrize(
+    "compute,raw",
+    [
+        ("lambda", {"container_port": 3000, "memory": 1024, "timeout": 900, "health_check_path": "/health"}),
+        ("ec2", {"container_port": 3000, "instance_type": "t3.medium", "health_check_path": "/health"}),
+    ],
+)
+def test_lambda_and_ec2_values_kept(compute, raw):
+    assert catalog.fill_values(compute, raw) == raw
+
+
+@pytest.mark.parametrize("compute,template", [("lambda", "lambda/basic"), ("ec2", "ec2/basic")])
+def test_plan_and_deploy_lambda_and_ec2(client, compute, template):
+    space = create_space(client).json()
+    plan = make_plan(client, space, compute).json()["plans"][0]
+    assert plan["template"] == template
+    assert "container_port" not in plan["values"]  # AI가 확인 못 한 포트는 비워서 워크플로가 EXPOSE를 쓴다
+    r = client.post(f"/api/app-spaces/{space['id']}/deployments", json={"compute": compute, "plan_id": plan["id"]})
+    assert r.status_code == 201
 
 
 # 구성안 API (프론트)
@@ -103,7 +160,7 @@ def test_plan_links_latest_done_analysis(client):
         assert db.get(models.Plan, plan_id).analysis_id is not None
 
 
-def test_plan_for_not_ready_compute(client):
+def test_plan_for_not_ready_compute(client, lambda_not_ready):
     space = create_space(client).json()
     r = make_plan(client, space, "lambda")
     assert (r.status_code, r.json()["error"]) == (400, "compute_not_ready")
@@ -145,7 +202,7 @@ def test_deploy_with_other_apps_plan(client):
     assert (r.status_code, r.json()["error"]) == (400, "plan_mismatch")
 
 
-def test_deploy_not_ready_compute(client):
+def test_deploy_not_ready_compute(client, lambda_not_ready):
     space = create_space(client).json()
     r = client.post(f"/api/app-spaces/{space['id']}/deployments", json={"compute": "lambda"})
     assert (r.status_code, r.json()["error"]) == (400, "compute_not_ready")
@@ -163,7 +220,7 @@ def test_workflow_gets_template_values_and_infra(client, secret):
         "id": plan_id,
         "template": "ecs-fargate/basic",
         "values": PLAN_DEFAULTS,
-        "infra": {"id": PUBLIC, "vpc_id": "vpc-test", "public_subnet_ids": [], "private_subnet_ids": []},
+        "infra": {"id": PUBLIC, "vpc_id": "vpc-test", "public_subnet_ids": ["subnet-a", "subnet-c"], "private_subnet_ids": []},
     }
 
 
@@ -211,3 +268,59 @@ def test_plan_uses_ai_template_values(client, monkeypatch, template_values, expe
     space = create_space(client).json()
     client.post(f"/api/app-spaces/{space['id']}/analysis")
     assert make_plan(client, space).json()["plans"][0]["values"] == expected
+
+
+# 온프레미스 VM (10/3 박소정 님 플레이북, 배포 레포 scripts/vm_plan.py check_values와 같은 규칙)
+
+VM_DEFAULTS = {"runtime": None, "app_port": 8080, "health_check_path": "/", "build_command": "", "start_command": "",
+               "runtime_version": "21", "java_server": "none", "war_file": "target/*.war"}
+
+
+def test_vm_defaults():
+    assert catalog.is_ready("vm")
+    assert catalog.fill_values("vm") == VM_DEFAULTS
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {"runtime": "ruby"},
+        {"app_port": 80},  # 앱은 일반 사용자로 실행돼 1024 미만 포트를 못 연다
+        {"app_port": "3000"},
+        {"runtime_version": "11"},
+        {"java_server": "jetty"},
+        {"start_command": "npm start\nrm -rf /"},  # 한 줄만
+        {"build_command": "x" * 501},
+        {"health_check_path": "health"},
+    ],
+)
+def test_vm_out_of_range(raw):
+    with pytest.raises(ValueError):
+        catalog.fill_values("vm", raw)
+
+
+@pytest.mark.parametrize(
+    "values,missing",
+    [
+        ({"runtime": "node", "start_command": "npm start"}, []),
+        ({"runtime": "java", "java_server": "tomcat", "start_command": ""}, []),  # Tomcat WAR는 실행 명령이 없다
+        ({"runtime": None, "start_command": ""}, ["runtime", "start_command"]),
+        ({"runtime": "python", "start_command": ""}, ["start_command"]),
+    ],
+)
+def test_vm_missing(values, missing):
+    assert catalog.vm_missing(values) == missing
+
+
+def test_vm_plan_without_runtime_is_400(client):
+    """분석이 언어·실행 명령을 찾지 못하면 기본값으로 대신할 수 없어 구성안을 만들지 않는다 (500이 아니라 400)."""
+    from fastapi import HTTPException
+
+    from app import models
+    from app.routers import app_spaces
+    from tests.conftest import TestingSession
+
+    space = create_space(client).json()
+    with TestingSession() as db, pytest.raises(HTTPException) as e:
+        app_spaces._new_plan(db, db.get(models.AppSpace, space["id"]), "vm")
+    assert (e.value.status_code, e.value.detail["error"]) == (400, "vm_values_missing")

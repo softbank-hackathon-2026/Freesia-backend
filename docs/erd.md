@@ -17,6 +17,7 @@ erDiagram
 
     infra_spaces {
         varchar id PK "InfraId 태그 값"
+        varchar provider "aws / onprem / gcp / azure (읽은 출처)"
         varchar name
         varchar description
         varchar network "public / private / ha"
@@ -27,6 +28,11 @@ erDiagram
         varchar vpc_id
         json public_subnet_ids
         json private_subnet_ids
+        json app_subnet_ids
+        boolean is_default "DefaultInfra 태그. 인프라 선택 안 함일 때"
+        varchar alb_listener_arn
+        varchar alb_security_group_id
+        varchar alb_base_url
         timestamptz created_at
     }
 
@@ -51,6 +57,9 @@ erDiagram
         timestamptz teardown_requested_at
         timestamptz teardown_finished_at
         varchar teardown_reason
+        timestamptz deleted_at
+        varchar route_path
+        int alb_rule_priority
         timestamptz created_at
     }
 
@@ -80,6 +89,7 @@ erDiagram
         varchar app_space_id FK
         varchar compute
         varchar plan_id "plans.id, API에서 검사"
+        varchar source_deployment_id "재배포 원본 ID, nullable; API에서 검사"
         varchar commit_sha
         varchar status "pending ~ success / failed"
         varchar step "queued ~ done"
@@ -108,9 +118,10 @@ erDiagram
         int position "받은 순서"
         varchar type "화면에서 묶는 기준"
         varchar action "create / update / replace / delete / no-op"
-        varchar state "pending / in_progress / done / failed"
+        varchar state "pending / in_progress / done / failed / deleted"
         varchar reason
         timestamptz updated_at
+        boolean predicted "배포 시작 때 템플릿으로 미리 넣은 자원"
     }
 ```
 
@@ -146,6 +157,8 @@ erDiagram
 | `vpc_id` | varchar(32) | | | 배포 때 워크플로에 넘긴다 (박소정 님 10/2) |
 | `public_subnet_ids` | json | | | 〃 |
 | `private_subnet_ids` | json | | | 〃 |
+| `app_subnet_ids` | json | | | 프라이빗 중 이름에 db가 없는 서브넷. shared-alb 앱을 두는 자리 (마이그레이션 0009) |
+| `alb_listener_arn`, `alb_security_group_id`, `alb_base_url` | varchar | | | 인프라에 미리 만든 공용 ALB(InfraId 태그, ApplicationId 태그 없음)의 443 리스너·보안그룹·`https://인증서 도메인`. 있으면 Fargate는 `ecs-fargate/shared-alb` (0009) |
 | `created_at` | timestamptz | | O | 목록 순서 |
 
 ### repositories (등록된 저장소) · 구현됨
@@ -176,6 +189,9 @@ erDiagram
 | `teardown_requested_at` | timestamptz | | | 내리기를 요청한 시각. 30분 안에 콜백이 없으면 다시 요청할 수 있다 |
 | `teardown_finished_at` | timestamptz | | | 내리기 콜백을 받은 시각 |
 | `teardown_reason` | varchar(1000) | | | 내리기 실패 이유 |
+| `deleted_at` | timestamptz | | | 앱 삭제(목록에서 숨기기) 시각. 있으면 목록·상세·`app_count`에서 빠진다. 기록은 남긴다 (마이그레이션 0007) |
+| `route_path` | varchar(100) | | | 공용 ALB 뒤에 붙을 때 받을 경로(`/api`, `/`). 같은 인프라의 살아 있는 앱끼리 겹치면 안 됨 (마이그레이션 0008) |
+| `alb_rule_priority` | int | | | 공용 ALB 리스너 규칙 번호. 구체 경로 100번대, `/` 1000번대. 처음 배포할 때 정하고 다시 쓰지 않음 (0008) |
 | `created_at` | timestamptz | | O | |
 
 ### analyses (AI 견적) · 구현됨
@@ -248,9 +264,12 @@ erDiagram
 | `position` | int | | O | 처음 받은 순서. 이 순서로 돌려준다 |
 | `type` | varchar(100) | | O | 예: `aws_lb`. 화면은 이걸로 묶는다 |
 | `action` | varchar(20) | | O | `create` / `update` / `replace` / `delete` / `no-op` |
-| `state` | varchar(20) | | O | `pending` / `in_progress` / `done` / `failed` |
+| `state` | varchar(20) | | O | `pending` / `in_progress` / `done` / `failed`. 내리기에 성공하면 그 앱의 자원은 `deleted` |
 | `reason` | varchar(1000) | | | 실패했을 때만 |
 | `updated_at` | timestamptz | | O | |
+| `predicted` | boolean | | O | 배포 시작 때 템플릿으로 미리 넣은 자원이면 true (마이그레이션 0010). 워크플로가 같은 주소를 보고하면 false |
 
+- 배포를 시작하면(워크플로 실행 성공 직후) 배포 레포 `templates/<템플릿>/*.tf`의 `resource` 블록을 읽어 `pending`으로 미리 넣는다. 원래 트리는 deploy 단계(빌드 1~2분 뒤)에야 채워졌다. 템플릿은 10분 캐시하고, 못 읽으면 미리 넣지 않는다.
+- 자원 여러 개가 한 번에 오는 콜백(Terraform 계획 전체)을 받으면 계획에 없는 예상 자원을 지운다. 배포가 끝날 때(성공·실패)도 남은 예상 자원을 지운다. 빌드에서 실패하면 트리가 비워진다.
 - 같은 `action`에서 상태가 뒤로 가는 보고(`done` 뒤의 `in_progress`)는 무시한다. `replace`처럼 `action`이 바뀌면 새 작업이라 받는다.
 - 조회용 자원(`data.` 주소, `action=read`)은 트리에 넣지 않는다.

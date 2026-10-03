@@ -2,6 +2,7 @@
 import hashlib
 import hmac
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -172,6 +173,44 @@ def test_teardown_success_callback(client, real_mode, gh):
     assert (r.status_code, r.json()["error"]) == (409, "not_deployed")
 
 
+def add_resource(space_id, address="aws_lb.app"):
+    """마지막 배포에 워크플로가 보낸 것 같은 완료 자원을 하나 남긴다."""
+    with TestingSession() as db:
+        dep_id = db.get(models.AppSpace, space_id).latest_deployment_id
+        db.add(models.DeploymentResource(
+            deployment_id=dep_id, address=address, position=0, type="aws_lb", action="create", state="done",
+            updated_at=datetime.now(timezone.utc),
+        ))
+        db.commit()
+        return dep_id
+
+
+def resource_states(client, dep_id):
+    return [r["state"] for r in client.get(f"/api/deployments/{dep_id}/resources").json()]
+
+
+def test_teardown_success_marks_resources_deleted(client, real_mode, gh):
+    space = deployed_space(client)
+    old = add_resource(space["id"])
+    teardown(client, space)
+    assert resource_states(client, old) == ["done"]  # 끝나기 전에는 그대로
+    teardown_callback(client, space, {"status": "success"})
+    assert resource_states(client, old) == ["deleted"]
+    # 다시 배포하면 새 배포의 트리는 새로 채워지고, 내린 배포의 기록은 deleted로 남는다
+    client.post(f"/api/app-spaces/{space['id']}/deployments", json={"compute": "ecs-fargate"})
+    mark_deployed(space["id"])
+    new = add_resource(space["id"])
+    assert (resource_states(client, new), resource_states(client, old)) == (["done"], ["deleted"])
+
+
+def test_failed_teardown_keeps_resources(client, real_mode, gh):
+    space = deployed_space(client)
+    dep_id = add_resource(space["id"])
+    teardown(client, space)
+    teardown_callback(client, space, {"status": "failed", "reason": "자원을 지우는 중 실패했습니다."})
+    assert resource_states(client, dep_id) == ["done"]
+
+
 def test_teardown_failed_callback_can_retry(client, real_mode, gh):
     space = deployed_space(client)
     teardown(client, space)
@@ -258,3 +297,78 @@ def test_latest_commit_does_not_send_token(real_mode, gh):
     req = gh["requests"][0]
     assert req.url.path == "/repos/org/todo/commits/feat/x"
     assert "Authorization" not in req.headers
+
+
+# 앱 삭제 (목록에서 숨기기)
+
+
+def delete(client, space):
+    return client.delete(f"/api/app-spaces/{space['id']}")
+
+
+def test_delete_hides_app(client):
+    space, _ = start(client)  # 가짜 진행만 한 앱
+    infra = space["infra_id"]
+    before = client.get(f"/api/infra-spaces/{infra}").json()["app_count"]
+    assert delete(client, space).status_code == 204
+    assert space["id"] not in [a["id"] for a in client.get("/api/app-spaces").json()]
+    assert client.get(f"/api/app-spaces/{space['id']}").json()["error"] == "app_space_not_found"
+    assert client.get(f"/api/app-spaces/{space['id']}/metrics").status_code == 404
+    assert client.get(f"/api/infra-spaces/{infra}").json()["app_count"] == before - 1
+    assert delete(client, space).status_code == 404
+    with TestingSession() as db:  # 기록은 남는다
+        assert db.get(models.AppSpace, space["id"]).deleted_at is not None
+
+
+def test_cannot_delete_live_app(client, real_mode, gh):
+    space = deployed_space(client)
+    r = delete(client, space)
+    assert (r.status_code, r.json()["error"]) == (409, "app_still_deployed")
+    teardown(client, space)
+    assert (delete(client, space).status_code, delete(client, space).json()["error"]) == (409, "teardown_in_progress")
+    teardown_callback(client, space, {"status": "success"})
+    assert delete(client, space).status_code == 204
+
+
+def test_cannot_delete_after_failed_teardown(client, real_mode, gh):
+    space = deployed_space(client)
+    teardown(client, space)
+    teardown_callback(client, space, {"status": "failed", "reason": "x"})
+    assert delete(client, space).json()["error"] == "app_still_deployed"
+
+
+def test_delete_app_whose_real_deploy_failed_before_terraform(client, real_mode, gh):
+    space, _ = start(client)
+    mark_deployed(space["id"], status="failed")  # 워크플로는 돌았지만 빌드·변수 준비에서 실패
+    add_resource(space["id"])  # 자원 목록만 받고(pending) 만들지는 않음
+    with TestingSession() as db:
+        db.query(models.DeploymentResource).update({"state": "pending"})
+        db.commit()
+    assert delete(client, space).status_code == 204
+
+
+def test_cannot_delete_app_whose_deploy_failed_midway(client, real_mode, gh):
+    space, _ = start(client)
+    mark_deployed(space["id"], status="failed")  # Terraform이 자원을 만들다가 실패
+    add_resource(space["id"])  # done 자원이 남음
+    assert delete(client, space).json()["error"] == "app_still_deployed"
+
+
+def test_cannot_delete_while_deploying(client, real_mode, gh):
+    space, _ = start(client)
+    r = delete(client, space)
+    assert (r.status_code, r.json()["error"]) == (409, "deployment_in_progress")
+
+
+def test_vm_deploy_without_runtime_fails_instead_of_staying_pending(client, real_mode, gh):
+    """구성안 없이 vm을 배포했는데 분석이 언어·실행 명령을 못 찾았으면 워크플로를 부르지 않고 배포를 실패로 닫는다.
+    pending으로 남으면 이 앱의 다음 배포가 deployment_in_progress로 계속 막힌다."""
+    space = create_space(client).json()
+    with TestingSession() as db:
+        dep = models.Deployment(id="dep-vm", app_space_id=space["id"], compute="vm", status="pending", step="queued",
+                                created_at=datetime.now(timezone.utc))
+        db.add(dep)
+        db.commit()
+        app_spaces._start_workflow(db, db.get(models.AppSpace, space["id"]), dep)
+        assert db.get(models.Deployment, "dep-vm").status == "failed"
+    assert dispatches(gh) == []

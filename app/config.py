@@ -40,6 +40,27 @@ class Settings(BaseSettings):
     ai_timeout_seconds: int = 60  # 모델 응답 대기 상한 (API 명세 7절 3번)
     ai_schema_output: bool = True  # 모델이 JSON 스키마 출력(outputConfig)을 지원하지 않으면 false (예: Nova 2 Lite)
 
+    # Workload 계정 키: 배포된 앱의 지표·로그를 읽기만 한다 (모니터링, API 명세 12절). 서버는 Parameter Store
+    # /sbh/platform/demo/backend/WORKLOAD_AWS_* 값이 주입된다. AWS_* 이름을 쓰지 않는다: 그러면 Bedrock 호출(작업 역할)이 이 키를 집어 간다
+    workload_aws_access_key_id: str = ""
+    workload_aws_secret_access_key: str = ""
+    workload_aws_region: str = "ap-northeast-2"
+    # Sandbox 계정 키: Workload와 같은 용도(인프라 목록·모니터링 읽기)로 Sandbox 계정을 읽는다. 서버는 Parameter Store
+    # /sbh/platform/demo/backend/SANDBOX_AWS_* 값이 주입된다. 비어 있으면 Sandbox는 읽지 않는다
+    sandbox_aws_access_key_id: str = ""
+    sandbox_aws_secret_access_key: str = ""
+    sandbox_aws_region: str = "ap-northeast-2"
+    # 인프라의 계정 ID로 어느 키를 쓸지 고른다. 비밀값이 아니다 (배포 레포 plan.py ACCOUNTS와 같은 값)
+    sandbox_aws_account_id: str = "635738234799"
+
+    # 온프레미스(Proxmox) 인프라 조회. cloudflared 터널 뒤의 Proxmox API를 Cloudflare Access(Service Token)를 거쳐 읽기만 한다.
+    # 서버는 Parameter Store /sbh/platform/demo/backend/ONPREM_* 값이 주입된다. 5개가 다 있어야 읽고, 하나라도 비면 온프레미스는 읽지 않는다
+    onprem_api_url: str = ""  # https:// 를 포함한 Proxmox API 주소 (Cloudflare에 등록한 호스트명)
+    onprem_cf_client_id: str = ""
+    onprem_cf_client_secret: str = ""
+    onprem_pve_token_id: str = ""  # user@realm!토큰이름
+    onprem_pve_token_secret: str = ""
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

@@ -1,7 +1,7 @@
 """사용자가 만든 앱 = 등록된 저장소 하나 + 인프라 하나."""
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy import DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -24,4 +24,9 @@ class AppSpace(Base):
     teardown_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     teardown_finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     teardown_reason: Mapped[str | None] = mapped_column(String(1000))
+    # 앱 삭제 = 목록에서 숨기기. 배포·분석 기록은 남긴다 (API 명세 6절)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 공용 ALB 뒤에 붙을 때의 경로(/api, /)와 리스너 규칙 번호 (app/alb_rules.py). 공용 ALB를 안 쓰면 비어 있다
+    route_path: Mapped[str | None] = mapped_column(String(100))
+    alb_rule_priority: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

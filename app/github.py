@@ -1,10 +1,11 @@
-"""GitHub 호출: 배포할 커밋 확정과 배포 레포 워크플로 실행 (ADR-009).
+"""GitHub 호출: 배포할 커밋 확정, 배포 레포 워크플로 실행, 템플릿 자원 목록 읽기 (ADR-009).
 
 워크플로(workload-deploy)는 항상 떠 있는 서버가 아니다. 백엔드가 GitHub에 실행을 요청하면
 GitHub이 그때 실행한다(workflow_dispatch). 실행 요청에는 GITHUB_DEPLOY_TOKEN이 필요하다.
 """
 import logging
 import re
+import time
 from urllib.parse import quote
 
 import httpx
@@ -17,6 +18,14 @@ logger = logging.getLogger(__name__)
 GITHUB_API = "https://api.github.com"
 # 테스트에서 httpx.MockTransport로 바꿔 끼운다
 TRANSPORT: httpx.BaseTransport | None = None
+
+# 템플릿 .tf의 자원 블록. 템플릿은 module·count·for_each를 쓰지 않아 주소가 "타입.이름" 그대로다
+RESOURCE_RE = re.compile(r'^resource\s+"([\w-]+)"\s+"([\w-]+)"', re.M)
+TEMPLATE_CACHE_SECONDS = 600
+# 배포 시작 요청 안에서 읽으므로 짧게 기다린다. 넘으면 미리 채우기만 건너뛴다
+TEMPLATE_TIMEOUT_SECONDS = 5
+# (템플릿, ref) → (읽은 시각, [(타입, 주소)]). 서버(프로세스)마다 따로 기억한다
+_template_cache: dict[tuple[str, str], tuple[float, list[tuple[str, str]]]] = {}
 
 
 class GitHubError(Exception):
@@ -68,3 +77,45 @@ def dispatch(workflow: str, inputs: dict[str, str]) -> None:
         # 토큰은 로그에 남기지 않는다. GitHub 응답 본문(오류 설명)만 남긴다
         logger.warning("workflow_dispatch 실패: %s %s %s", workflow, r.status_code, r.text[:500])
         raise GitHubError(f"배포 워크플로를 실행하지 못했습니다 (GitHub {r.status_code}).")
+
+
+def template_resources(template: str) -> list[tuple[str, str]]:
+    """배포 레포 templates/<template>/*.tf에 적힌 자원을 [(타입, 주소)]로 돌려준다. 못 읽으면 GitHubError.
+
+    배포 트리를 시작부터 보여 주려고 읽는다. 템플릿이 바뀌어도 백엔드를 고치지 않게 목록을 코드에 적지 않는다.
+    배포 레포는 public이지만 토큰이 있으면 붙인다 (토큰 없는 한도 시간당 60번을 저장소 분석과 나눠 쓰므로).
+    """
+    s = get_settings()
+    key = (template, s.deploy_ref)
+    cached = _template_cache.get(key)
+    if cached and time.monotonic() - cached[0] < TEMPLATE_CACHE_SECONDS:
+        return cached[1]
+    headers = {"X-GitHub-Api-Version": "2022-11-28"}
+    if s.github_deploy_token:
+        headers["Authorization"] = f"Bearer {s.github_deploy_token}"
+    try:
+        with _client() as c:
+            r = c.get(
+                f"/repos/{s.deploy_repo}/contents/templates/{template}",
+                params={"ref": s.deploy_ref}, headers=headers, timeout=TEMPLATE_TIMEOUT_SECONDS,
+            )
+            if r.status_code != 200:
+                raise GitHubError(f"템플릿 {template}을 찾지 못했습니다 (GitHub {r.status_code}).")
+            paths = sorted(f["path"] for f in r.json() if f.get("type") == "file" and f["name"].endswith(".tf"))
+            found = []
+            for path in paths:
+                r = c.get(
+                    f"/repos/{s.deploy_repo}/contents/{path}",
+                    params={"ref": s.deploy_ref},
+                    headers=headers | {"Accept": "application/vnd.github.raw"},
+                    timeout=TEMPLATE_TIMEOUT_SECONDS,
+                )
+                if r.status_code != 200:
+                    raise GitHubError(f"템플릿 파일 {path}을 읽지 못했습니다 (GitHub {r.status_code}).")
+                found += [(t, f"{t}.{n}") for t, n in RESOURCE_RE.findall(r.text)]
+    except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
+        raise GitHubError("템플릿을 읽지 못했습니다.") from e
+    if not found:
+        raise GitHubError(f"템플릿 {template}에 자원이 없습니다.")
+    _template_cache[key] = (time.monotonic(), found)
+    return found
