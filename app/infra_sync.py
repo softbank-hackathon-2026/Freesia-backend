@@ -39,28 +39,8 @@ NETWORKS = {"public", "db-isolated", "multi-az"}
 DEFAULT_COMPUTES = ["ecs-fargate", "lambda", "ec2"]
 PROVIDERS = ("aws", "onprem", "gcp", "azure")  # API 응답 provider 값. 지금 읽는 출처는 aws와 onprem이다
 
-# 화면 이름은 AWS에 없어서 여기 둔다. ADR-026에서 이름이 정해지면 바꾼다. VPC에 DisplayName·Description·
-# Network·Computes 태그가 있으면 태그가 우선이다. 표에도 태그에도 없으면 InfraId를 이름으로 쓴다.
-KNOWN = {
-    "sbh-workload-demo-vpc-public01": {
-        "name": "공개 웹 서비스용",
-        "description": "인터넷에서 바로 접속하는 웹 서비스. 퍼블릭 서브넷만 있는 가장 단순한 구성",
-        "network": "public",
-        "computes": ["ecs-fargate", "lambda", "ec2"],
-    },
-    "sbh-workload-demo-vpc-dbisolated01": {
-        "name": "DB 격리형 서비스용",
-        "description": "웹은 퍼블릭, DB는 인터넷이 닿지 않는 프라이빗 서브넷에 두는 구성",
-        "network": "db-isolated",
-        "computes": ["ecs-fargate", "lambda"],
-    },
-    "sbh-workload-demo-vpc-multiaz01": {
-        "name": "고가용성 서비스용",
-        "description": "여러 가용영역에 나눠 두어 한 곳에 장애가 나도 살아 있는 구성",
-        "network": "multi-az",
-        "computes": ["ecs-fargate", "ec2"],
-    },
-}
+# 화면 정보도 AWS에서만 가져온다: VPC의 DisplayName·Description·Network·Computes 태그 (API 명세 4절).
+# 태그가 없으면 이름은 InfraId, 설명은 빈칸, 컴퓨팅은 세 가지 전부, 네트워크는 서브넷 구성으로 짐작한다.
 
 
 class SyncError(Exception):
@@ -351,19 +331,19 @@ def apply(db: Session, found: list[Found], read: list[Source]) -> None:
 
 
 def describe(f: Found) -> dict:
-    """화면 정보. 태그 > 코드 표 > 기본값."""
-    known = KNOWN.get(f.id, {})
+    """화면 정보. VPC 태그, 없으면 기본값."""
     computes = [c for c in re.split(r"[\s:/]+", f.tags.get("Computes", "")) if c in DEFAULT_COMPUTES]
-    network = f.tags.get("Network", "")
+    network = f.tags.get("Network", "").strip()
     return {
-        "name": (f.tags.get("DisplayName") or known.get("name") or f.id)[:100],
-        "description": (f.tags.get("Description") or known.get("description") or "")[:300],
-        "network": network if network in NETWORKS else known.get("network") or _guess_network(f),
-        "computes": computes or known.get("computes") or DEFAULT_COMPUTES,
+        "name": (f.tags.get("DisplayName", "").strip() or f.id)[:100],
+        "description": f.tags.get("Description", "").strip()[:300],
+        "network": network if network in NETWORKS else _guess_network(f),
+        "computes": computes or DEFAULT_COMPUTES,
     }
 
 
 def _guess_network(f: Found) -> str:
+    """Network 태그가 없을 때. Multi-AZ와 DB 격리형은 서브넷만으로 구분하기 어려워 태그를 권한다."""
     if not f.private_subnet_ids:
         return "public"
     return "db-isolated"
