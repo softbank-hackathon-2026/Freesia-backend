@@ -268,3 +268,59 @@ def test_plan_uses_ai_template_values(client, monkeypatch, template_values, expe
     space = create_space(client).json()
     client.post(f"/api/app-spaces/{space['id']}/analysis")
     assert make_plan(client, space).json()["plans"][0]["values"] == expected
+
+
+# 온프레미스 VM (10/3 박소정 님 플레이북, 배포 레포 scripts/vm_plan.py check_values와 같은 규칙)
+
+VM_DEFAULTS = {"runtime": None, "app_port": 8080, "health_check_path": "/", "build_command": "", "start_command": "",
+               "runtime_version": "21", "java_server": "none", "war_file": "target/*.war"}
+
+
+def test_vm_defaults():
+    assert catalog.is_ready("vm")
+    assert catalog.fill_values("vm") == VM_DEFAULTS
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {"runtime": "ruby"},
+        {"app_port": 80},  # 앱은 일반 사용자로 실행돼 1024 미만 포트를 못 연다
+        {"app_port": "3000"},
+        {"runtime_version": "11"},
+        {"java_server": "jetty"},
+        {"start_command": "npm start\nrm -rf /"},  # 한 줄만
+        {"build_command": "x" * 501},
+        {"health_check_path": "health"},
+    ],
+)
+def test_vm_out_of_range(raw):
+    with pytest.raises(ValueError):
+        catalog.fill_values("vm", raw)
+
+
+@pytest.mark.parametrize(
+    "values,missing",
+    [
+        ({"runtime": "node", "start_command": "npm start"}, []),
+        ({"runtime": "java", "java_server": "tomcat", "start_command": ""}, []),  # Tomcat WAR는 실행 명령이 없다
+        ({"runtime": None, "start_command": ""}, ["runtime", "start_command"]),
+        ({"runtime": "python", "start_command": ""}, ["start_command"]),
+    ],
+)
+def test_vm_missing(values, missing):
+    assert catalog.vm_missing(values) == missing
+
+
+def test_vm_plan_without_runtime_is_400(client):
+    """분석이 언어·실행 명령을 찾지 못하면 기본값으로 대신할 수 없어 구성안을 만들지 않는다 (500이 아니라 400)."""
+    from fastapi import HTTPException
+
+    from app import models
+    from app.routers import app_spaces
+    from tests.conftest import TestingSession
+
+    space = create_space(client).json()
+    with TestingSession() as db, pytest.raises(HTTPException) as e:
+        app_spaces._new_plan(db, db.get(models.AppSpace, space["id"]), "vm")
+    assert (e.value.status_code, e.value.detail["error"]) == (400, "vm_values_missing")

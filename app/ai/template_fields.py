@@ -2,14 +2,16 @@
 
 컴퓨팅마다 배포 레포 workload-deploy의 templates/<이름>/variables.tf에서 "Filled per app"으로 표시된 변수와
 이름을 똑같이 쓴다. 여기에는 AI에게 물을 것(타입, 고를 수 있는 값, 설명)만 두고, 범위 검사와 기본값은
-app/catalog.py가 한다. 템플릿이 catalog에 등록(ready)된 뒤 여기에 추가한다.
+app/catalog.py가 한다. 템플릿이 catalog에 등록된 뒤 여기에 추가한다.
+온프레미스 vm은 Terraform이 아니라 배포 레포 ansible/playbooks/deploy.yml이고, 값 이름·범위는 scripts/vm_plan.py
+check_values를 따르고, 검사·기본값은 다른 컴퓨팅처럼 catalog(_vm_values)가 한다.
 필드 순서는 fit_values가 값을 넣어 보는 순서라, 다른 값에 따라 범위가 바뀌는 값(Fargate memory)을 뒤에 둔다.
 enum은 템플릿이 허용하는 값을 그대로 옮길 때만 건다. 범위를 AI 쪽에서 좁히지 않는다 (상한은 catalog·템플릿이 정한다).
 """
 import logging
 from typing import Any
 
-from app.catalog import EC2_INSTANCE_TYPES, FARGATE_MEMORY, LAMBDA_MIN_PORT, fill_values
+from app.catalog import EC2_INSTANCE_TYPES, FARGATE_MEMORY, LAMBDA_MIN_PORT, TEMPLATES, VM_JAVA_SERVERS, VM_JAVA_VERSIONS, VM_RUNTIMES
 
 logger = logging.getLogger(__name__)
 
@@ -68,11 +70,58 @@ TEMPLATE_FIELDS: dict[str, dict[str, dict[str, Any]]] = {
             "description": "EC2 서버 크기. 기본은 t3.micro이고, JVM·머신러닝 라이브러리처럼 무거운 런타임일 때만 t3.small·t3.medium으로 키웁니다.",
         },
     },
+    # 온프레미스 VM. Docker 없이 VM(Ubuntu)에 런타임을 apt로 설치하고 소스를 빌드해 systemd로 실행한다.
+    # ponytail: env(앱 환경변수)는 뺐다. 열린 키 객체는 스키마 출력에서 막힐 수 있고 비밀값을 AI가 채우면 안 된다
+    "vm": {
+        "runtime": {
+            "type": "string",
+            "enum": VM_RUNTIMES,
+            "description": "앱 언어. 의존성 파일(requirements.txt·pyproject.toml / package.json / pom.xml·build.gradle)로 정합니다. "
+            "이 셋이 아니거나 여러 프로세스가 함께 떠야 하는 앱은 vm에 맞지 않습니다(unsuitable).",
+        },
+        "app_port": {
+            "type": "integer",
+            "description": "앱이 요청을 받는 포트(1024~65535 정수). 앱은 일반 사용자로 실행되고 PORT 환경변수로 이 값을 받습니다. "
+            "코드의 listen·설정 파일로 확인하고, 코드가 PORT 환경변수를 읽으면 확인한 기본 포트를 그대로 씁니다. "
+            "1024 미만이면 앱이 PORT를 읽을 때만 8080을 씁니다. Java Tomcat(java_server=tomcat)이면 8080입니다.",
+        },
+        "health_check_path": _HEALTH,
+        "build_command": {
+            "type": "string",
+            "description": "앱 폴더에서 한 번 실행할 설치·빌드 명령(한 줄). 필요 없으면 빈 문자열입니다. "
+            "Python은 VM이 시스템 전체 pip 설치를 막아서 반드시 venv를 씁니다. 실제로 있는 의존성 파일에 맞춥니다: "
+            "requirements.txt가 있으면 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt, "
+            "pyproject.toml만 있으면 python3 -m venv .venv && .venv/bin/pip install . 입니다. "
+            "Node는 package.json에 dependencies가 있을 때만 npm ci --omit=dev(lock 파일이 없으면 npm install --omit=dev)입니다. "
+            "Java는 ./mvnw -q package -DskipTests처럼 빌드합니다.",
+        },
+        "start_command": {
+            "type": "string",
+            "description": "앱을 실행하는 명령(한 줄). systemd가 앱 폴더에서 실행하고 포그라운드로 계속 떠 있어야 합니다. "
+            "예: node server.js / .venv/bin/python app.py / java -jar target/app.jar. "
+            "build_command에서 만든 가상환경·빌드 결과 경로를 맞춰 씁니다. java_server=tomcat이면 빈 문자열입니다.",
+        },
+        "runtime_version": {
+            "type": "string",
+            "enum": VM_JAVA_VERSIONS,
+            "description": "Java 버전(pom.xml·build.gradle의 java 버전에 가까운 값). Java가 아니면 21입니다. "
+            "Python·Node는 버전을 고를 수 없고 Ubuntu 기본 패키지를 씁니다.",
+        },
+        "java_server": {
+            "type": "string",
+            "enum": VM_JAVA_SERVERS,
+            "description": "Java 앱을 WAR로 Tomcat에 올릴 때만 tomcat입니다(pom.xml packaging이 war). 그 외에는 none입니다.",
+        },
+        "war_file": {
+            "type": "string",
+            "description": "java_server=tomcat일 때 빌드가 만드는 WAR 경로(glob 가능). 그 외에는 target/*.war입니다.",
+        },
+    },
 }
 
 
 def fit_values(compute: str, raw: Any) -> dict[str, Any]:
-    """AI 값을 필드 순서대로 하나씩 넣어 보며 검사(catalog.fill_values, AWS 규칙 포함)를 통과하는 것만 남긴다.
+    """AI 값을 필드 순서대로 하나씩 넣어 보며 검사(catalog의 템플릿별 검사, AWS 규칙 포함)를 통과하는 것만 남긴다.
 
     틀린 값 하나 때문에 맞는 값(예: 포트)까지 기본값으로 돌아가지 않게 한다.
     돌려주는 값은 검사를 통과한 AI 값만이고 기본값은 채우지 않는다. 기본값은 구성안을 만들 때 채운다
@@ -84,7 +133,8 @@ def fit_values(compute: str, raw: Any) -> dict[str, Any]:
         if name not in raw:
             continue
         try:
-            fill_values(compute, {**kept, name: raw[name]})
+            # ready와 상관없이 검사한다. ready는 배포 가능 여부라 준비 전(vm)이어도 분석 값은 남긴다
+            TEMPLATES[compute].fill({**kept, name: raw[name]})
         except ValueError as e:
             logger.warning("템플릿 값을 버립니다 (%s.%s=%r): %s", compute, name, raw[name], e)
             continue

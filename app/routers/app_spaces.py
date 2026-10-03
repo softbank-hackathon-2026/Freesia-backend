@@ -404,6 +404,10 @@ def _start_workflow(db: Session, space: models.AppSpace, dep: models.Deployment)
         db.rollback()
         deploy.record_event(db, dep, "failed", dep.step, reason=str(e))
         db.commit()
+    except HTTPException as e:  # 구성안을 못 만듦(vm_values_missing). 배포가 pending으로 남아 앱이 막히지 않게 실패로 닫는다
+        db.rollback()
+        deploy.record_event(db, dep, "failed", dep.step, reason=e.detail["message"])
+        db.commit()
 
 
 def _prefill_resources(db: Session, dep: models.Deployment) -> None:
@@ -526,6 +530,12 @@ def _new_plan(db: Session, space: models.AppSpace, compute: str) -> models.Plan:
         values = catalog.fill_values(compute, ai_values)
     except ValueError:
         ai_values, values = None, catalog.fill_values(compute)
+    # VM은 언어·실행 명령에 기본값이 없어서 분석이 찾지 못했으면 구성안을 만들 수 없다
+    if compute == "vm" and (missing := catalog.vm_missing(values)):
+        raise HTTPException(400, detail={
+            "error": "vm_values_missing",
+            "message": f"분석에서 {', '.join(missing)}을(를) 찾지 못해 VM에 배포할 수 없습니다. 다시 분석해 주세요.",
+        })
     if "container_port" not in (ai_values or {}):
         values.pop("container_port", None)
     if template is catalog.SHARED_ALB:
