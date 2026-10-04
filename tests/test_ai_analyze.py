@@ -104,6 +104,15 @@ def test_mixed_computes_without_dockerfile(repo_files, model, has_dockerfile, st
     assert result.status == status
 
 
+def test_onprem_container_alone_with_dockerfile(repo_files, model):
+    """온프레미스 인프라(onprem + onprem-container). Dockerfile이 있는 Go 앱은 onprem(Python·Node·Java만)이 unsuitable이라
+    배포할 수 있는 후보가 onprem-container 하나여도 통과한다."""
+    model(output(candidates=[cand("onprem-container", "selected", ["Dockerfile"]), cand("onprem", "unsuitable")],
+                 template_values={"onprem-container": CONTAINER_GOOD}))
+    result, _ = run_analysis(URL, "main", ["onprem", "onprem-container"])
+    assert result.status == "done" and result.template_values["onprem-container"] == CONTAINER_GOOD
+
+
 def test_repo_error_is_failed(monkeypatch):
     def broken(url, branch):
         raise RepoError("저장소나 브랜치를 찾을 수 없어요.")
@@ -162,6 +171,7 @@ LAMBDA_GOOD = {"container_port": 3000, "health_check_path": "/health", "memory":
 EC2_GOOD = {"container_port": 3000, "health_check_path": "/health", "instance_type": "t3.micro"}
 VM_GOOD = {"runtime": "node", "app_port": 3000, "health_check_path": "/health", "build_command": "npm ci",
            "start_command": "npm start", "runtime_version": "21", "java_server": "none", "war_file": "target/*.war"}
+CONTAINER_GOOD = {"container_port": 3000, "health_check_path": "/health"}
 
 
 def without(values, *names):
@@ -169,7 +179,7 @@ def without(values, *names):
 
 
 def test_template_values_saved(repo_files, model):
-    values = {"ecs-fargate": GOOD, "lambda": LAMBDA_GOOD, "ec2": EC2_GOOD, "onprem": VM_GOOD}
+    values = {"ecs-fargate": GOOD, "lambda": LAMBDA_GOOD, "ec2": EC2_GOOD, "onprem": VM_GOOD, "onprem-container": CONTAINER_GOOD}
     model(output(template_values=values))
     result, _ = run_analysis(URL, "main", COMPUTES)
     assert result.template_values == values
@@ -194,6 +204,10 @@ def test_template_values_saved(repo_files, model):
         ("onprem", {**VM_GOOD, "start_command": "npm start\nrm -rf /"}, without(VM_GOOD, "start_command")),  # 한 줄만
         ("onprem", {**VM_GOOD, "build_command": None}, without(VM_GOOD, "build_command")),
         ("onprem", {**VM_GOOD, "health_check_path": "health"}, without(VM_GOOD, "health_check_path")),
+        # onprem-container는 vm_plan.py check_container_values 규칙 (컨테이너 안 포트라 1024 미만도 된다)
+        ("onprem-container", {**CONTAINER_GOOD, "container_port": 80}, {**CONTAINER_GOOD, "container_port": 80}),
+        ("onprem-container", {**CONTAINER_GOOD, "container_port": 0}, without(CONTAINER_GOOD, "container_port")),
+        ("onprem-container", {**CONTAINER_GOOD, "health_check_path": "health"}, without(CONTAINER_GOOD, "health_check_path")),
     ],
 )
 def test_wrong_template_values_fall_back_per_field(repo_files, model, compute, given, expected):
@@ -219,6 +233,6 @@ def test_failed_has_no_template_values(repo_files, model):
 def test_template_fields_match_catalog():
     """양식의 이름이 catalog(= variables.tf)와 다르면 AI 값이 오류 없이 버려진다. 템플릿을 추가할 때 여기서 잡는다."""
     for compute, fields in TEMPLATE_FIELDS.items():
-        assert catalog.is_ready(compute), compute
-        assert set(catalog.fill_values(compute)) == set(fields), compute
+        # ready와 상관없이 비교한다. 배포 연결 전(onprem-container)이어도 AI 값은 분석 결과에 남는다
+        assert set(catalog.TEMPLATES[compute].fill({})) == set(fields), compute
     assert set(analyze.RESULT_SCHEMA["properties"]["template_values"]["required"]) == set(TEMPLATE_FIELDS)

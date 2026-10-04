@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 FAIL_MESSAGE = "분석에 실패했어요. 다시 시도해 주세요."
 NO_DOCKERFILE_MESSAGE = "Dockerfile이 없어서 지금은 배포할 수 없는 앱이에요."
+ONPREM_COMPUTES = {"onprem", "onprem-container"}
 
 SYSTEM_PROMPT = """\
 당신은 클라우드 배포 전문가입니다. 저장소의 파일을 보고, 이 앱을 어떤 컴퓨팅에 배포하면 좋을지 판단합니다.
@@ -32,6 +33,7 @@ SYSTEM_PROMPT = """\
 - state는 selected(추천) 정확히 1개, alternative(가능한 대안), unsuitable(비추천) 중 하나입니다. selected를 목록 맨 앞에 둡니다.
 - unsuitable을 뺀 후보가 2~3개 남아야 합니다. computes가 2개뿐이면 둘 다 selected와 alternative로 두고, 약한 쪽의 단점은 cons에 적습니다. computes가 1개면 그 하나를 selected로 둡니다.
 - 저장소에 Dockerfile이 없으면 onprem 말고는 배포할 수 없으므로 onprem 외 컴퓨팅은 unsuitable로 둡니다. 이때는 unsuitable을 뺀 후보가 1개여도 됩니다.
+- onprem과 onprem-container는 같은 온프레미스 VM입니다. Dockerfile이 있으면 onprem-container를 selected로 두고, onprem은 아래 runtime 안내에 맞는 앱일 때만 alternative, 아니면 unsuitable입니다. 온프레미스는 unsuitable을 뺀 후보가 1개여도 됩니다.
 - 모든 후보에 reason, cons, evidence_files를 채웁니다. 선택되지 않은 후보도 마찬가지입니다.
 - evidence에는 파일에서 실제로 읽은 사실만 씁니다. file은 제공된 파일 경로 중 하나여야 합니다. 파일에서 확인했으면 certain=true, 추정이면 false입니다.
 - evidence_files에는 evidence[].file에 있는 경로만 씁니다.
@@ -176,8 +178,8 @@ def validate(r: ModelOutput, paths: list[str], computes: list[str], missing: lis
     evidence_files = {e.file for e in r.evidence}
     check(sorted(c.compute for c in r.candidates) == sorted(computes), "V2·V3 후보는 computes와 같아야 함")
     check(states[:1] == ["selected"] and states.count("selected") == 1, "V4 selected는 1개이고 맨 앞")
-    # 컴퓨팅이 1개거나, Dockerfile이 없어 onprem만 배포할 수 있으면 1개도 된다
-    low = 1 if len(computes) == 1 or "Dockerfile" in missing else 2
+    # 컴퓨팅이 1개거나, Dockerfile이 없어 onprem만 배포할 수 있거나, 온프레미스 인프라(onprem은 Python·Node·Java만)면 1개도 된다
+    low = 1 if len(computes) == 1 or "Dockerfile" in missing or set(computes) <= ONPREM_COMPUTES else 2
     check(low <= len([s for s in states if s != "unsuitable"]) <= 3, "V5 unsuitable을 뺀 후보는 2~3개(배포할 수 있는 컴퓨팅이 1개면 1개)")
     check(evidence_files <= set(paths), "V6 evidence[].file은 읽은 파일만")
     check(all(set(c.evidence_files) <= evidence_files for c in r.candidates), "V7 evidence_files는 evidence[].file 중에서")
