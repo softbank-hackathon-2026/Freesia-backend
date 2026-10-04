@@ -5,6 +5,7 @@
 app/catalog.py가 한다. 템플릿이 catalog에 등록된 뒤 여기에 추가한다.
 온프레미스(onprem)는 Terraform이 아니라 배포 레포 ansible/playbooks/deploy.yml이고, 값 이름·범위는 scripts/vm_plan.py
 check_values를 따르고, 검사·기본값은 다른 컴퓨팅처럼 catalog(_vm_values)가 한다.
+onprem-container는 같은 VM에서 Dockerfile을 Docker로 실행한다(ansible/playbooks/deploy-container.yml, check_container_values).
 필드 순서는 fit_values가 값을 넣어 보는 순서라, 다른 값에 따라 범위가 바뀌는 값(Fargate memory)을 뒤에 둔다.
 enum은 템플릿이 허용하는 값을 그대로 옮길 때만 건다. 범위를 AI 쪽에서 좁히지 않는다 (상한은 catalog·템플릿이 정한다).
 """
@@ -116,6 +117,12 @@ TEMPLATE_FIELDS: dict[str, dict[str, dict[str, Any]]] = {
             "type": "string",
             "description": "java_server=tomcat일 때 빌드가 만드는 WAR 경로(glob 가능). 그 외에는 target/*.war입니다.",
         },
+    },
+    # 온프레미스 VM에서 Docker로 실행. 빌드·실행 명령은 Dockerfile이 정하고, VM 포트(app_port)는 배포 레포가 container_port로 맞춘다.
+    # 포트를 비우면 배포 레포가 EXPOSE를 읽지 않고 8080을 쓰므로 스키마 required로 항상 받는다
+    "onprem-container": {
+        "container_port": _PORT,
+        "health_check_path": _HEALTH,
     },
 }
 

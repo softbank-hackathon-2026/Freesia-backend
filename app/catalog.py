@@ -119,6 +119,12 @@ def vm_missing(values: dict[str, Any]) -> list[str]:
     return missing
 
 
+def _vm_container_values(raw: dict[str, Any]) -> dict[str, Any]:
+    """온프레미스 컨테이너 (배포 레포 ansible/playbooks/deploy-container.yml, vm_plan.py check_container_values).
+    app_port는 비워 두면 배포 레포가 container_port로 맞추고, env는 onprem처럼 AI가 채우지 않는다."""
+    return {"container_port": _port(raw, 8080), "health_check_path": _path(raw)}
+
+
 @dataclass(frozen=True)
 class Template:
     compute: str
@@ -174,6 +180,18 @@ TEMPLATES: dict[str, Template] = {
         summary="온프레미스 VM에 언어 런타임을 설치하고 소스를 빌드해 서비스(systemd)로 실행하는 구성",
         pros=["Dockerfile 없이 소스 그대로 배포", "사내 서버에 그대로 올라가 데이터가 밖으로 나가지 않음"],
         cons=["Python·Node·Java만 지원하고 Python·Node 버전은 고를 수 없음", "VM 1대라 장애나 재배포 때 잠깐 멈춤"],
+    ),
+    # 10/4 온프레미스 컨테이너 (배포 레포 PR #4·#5, deploy-vm.yml compute=onprem-container). Dockerfile이 있는 앱을 VM에서 Docker로 실행한다.
+    # 배포 실행(compute 입력 넘기기)·온프레미스 인프라 computes 연결 전이라 ready=False. AI 분석 값은 ready와 상관없이 남는다
+    "onprem-container": Template(
+        compute="onprem-container",
+        name="onprem-container",
+        ready=False,
+        fill=_vm_container_values,
+        plan_name="기본형",
+        summary="온프레미스 VM에서 레포의 Dockerfile로 이미지를 빌드해 Docker 컨테이너로 실행하는 구성",
+        pros=["언어와 상관없이 Dockerfile 그대로 배포", "사내 서버에 그대로 올라가 데이터가 밖으로 나가지 않음"],
+        cons=["Dockerfile이 레포 맨 위에 있어야 함", "VM 1대라 장애나 재배포 때 잠깐 멈춤"],
     ),
 }
 
