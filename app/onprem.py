@@ -5,6 +5,8 @@ freesia 태그가 붙은 VM을 인프라 Space 응답 형식으로 바꾼다. EC
 """
 import httpx
 
+from app.catalog import ONPREM_COMPUTES  # onprem(코드를 VM에서 빌드), onprem-container(Dockerfile을 Docker로)
+
 MANAGED_TAG = "freesia"  # 이 태그가 붙은 VM만 플랫폼이 관리할 인프라로 가져온다
 
 
@@ -31,9 +33,9 @@ def to_infra_space(vm: dict, tags: dict[str, str]) -> dict:
         "description": "VM에 Ansible로 백엔드를 배포합니다",
         "network": "vm",
         "status": "ready",
-        "computes": ["onprem"],
+        "computes": list(ONPREM_COMPUTES),
         "app_count": 0,
-        "deployable_computes": ["onprem"],
+        "deployable_computes": list(ONPREM_COMPUTES),
     }
 
 

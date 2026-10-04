@@ -54,7 +54,7 @@ def test_freesia_vm_is_listed(client, proxmox, monkeypatch):
     assert set(got) == {"vm-codex"}  # freesia 태그가 없는 VM·컨테이너는 빠진다
     item = got["vm-codex"]
     assert (item["provider"], item["name"], item["network"], item["status"]) == ("onprem", "softbankservice", "vm", "ready")
-    assert item["computes"] == ["onprem"] and item["deployable_computes"] == ["onprem"] and item["app_count"] == 0
+    assert item["computes"] == item["deployable_computes"] == ["onprem", "onprem-container"] and item["app_count"] == 0
     with TestingSession() as db:
         row = db.get(models.InfraSpace, "vm-codex")
         assert (row.aws_account_id, row.vpc_id, row.region) == (None, None, None)

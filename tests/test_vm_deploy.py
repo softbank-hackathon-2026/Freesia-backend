@@ -135,3 +135,50 @@ def test_vm_values_defaults_and_missing():
 def test_vm_values_rejected(values):
     with pytest.raises(ValueError):
         catalog.fill_values("onprem", values)
+
+
+# onprem-container: Dockerfile이 있는 앱을 VM에서 Docker로 (같은 deploy-vm.yml, compute로 플레이북을 고름)
+
+
+def container_app(client, onprem_infra, values):
+    app_id = client.post("/api/app-spaces", json={
+        "name": "sample-shop", "repo_url": "https://github.com/softbank-hackathon-2026/sample-shop", "infra_id": ONPREM,
+    }).json()["id"]
+    with TestingSession() as db:
+        db.get(models.InfraSpace, ONPREM).computes = ["onprem", "onprem-container"]
+        db.add(models.Analysis(
+            id=f"an-{app_id[4:]}", app_space_id=app_id, infra_id=ONPREM, commit_sha="c" * 40, status="done",
+            result={"template_values": {"onprem-container": values}}, model_id="test", created_at=AT, finished_at=AT,
+        ))
+        db.commit()
+    return app_id
+
+
+def test_onprem_container_is_offered(client, onprem):
+    with TestingSession() as db:
+        db.get(models.InfraSpace, ONPREM).computes = ["onprem", "onprem-container"]
+        db.commit()
+    infra = client.get(f"/api/infra-spaces/{ONPREM}").json()
+    assert infra["deployable_computes"] == ["onprem", "onprem-container"]
+
+
+def test_onprem_container_deploy_runs_deploy_vm_with_compute(client, real_mode, gh, onprem):
+    app_id = container_app(client, onprem, {"container_port": 3000, "health_check_path": "/health"})
+    r = client.post(f"/api/app-spaces/{app_id}/deployments", json={"compute": "onprem-container"})
+    assert r.json()["status"] == "pending"
+    [req] = dispatches(gh)
+    assert req.url.path.endswith("/actions/workflows/deploy-vm.yml/dispatches")  # AWS deploy.yml이 아니다
+    inputs = json.loads(req.content)["inputs"]
+    assert inputs["compute"] == "onprem-container"
+    plan = workflow_plan(client, inputs["plan_id"])
+    assert plan["infra"] == {"id": ONPREM, "vm_host": "vpn.howon.me"}
+    # 컨테이너는 runtime·start_command 없이 된다 (Dockerfile이 정함)
+    assert plan["values"] == {"container_port": 3000, "health_check_path": "/health"}
+
+
+def test_onprem_container_plan_without_ai_values_uses_defaults(client, real_mode, gh, onprem):
+    app_id = container_app(client, onprem, {})
+    r = client.post(f"/api/app-spaces/{app_id}/plans", json={"compute": "onprem-container"})
+    assert r.status_code == 200
+    # 포트를 모르면 비워 둔다. 배포 레포가 8080을 쓴다 (ansible/README.md)
+    assert r.json()["plans"][0]["values"] == {"health_check_path": "/"}

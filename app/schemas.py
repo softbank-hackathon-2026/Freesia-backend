@@ -39,7 +39,7 @@ UtcDatetime = Annotated[datetime, AfterValidator(_assume_utc)]
 DeploymentStatus = Literal["pending", "building", "deploying", "success", "failed"]
 # 배포 단계 (API 명세 9-3절, ADR-009). 이 순서로만 진행한다.
 DeploymentStep = Literal["queued", "prepare", "build", "deploy", "verify", "done"]
-Compute = Literal["ecs-fargate", "lambda", "ec2", "onprem"]  # onprem: 온프레미스 VM (Ansible, 배포 레포 deploy-vm.yml)
+Compute = Literal["ecs-fargate", "lambda", "ec2", "onprem", "onprem-container"]  # onprem·onprem-container: 온프레미스 VM (Ansible, 배포 레포 deploy-vm.yml)
 AnalysisStatus = Literal["pending", "running", "done", "failed"]
 # 모니터링 상태 (API 명세 12절). not_deployed: 지금 AWS에 떠 있는 실제 배포가 없음, waiting: 떠 있지만 아직 값이 없음
 MonitoringStatus = Literal["ok", "waiting", "not_deployed", "unsupported", "error"]

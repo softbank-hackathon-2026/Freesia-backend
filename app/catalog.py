@@ -110,6 +110,10 @@ def _vm_values(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# 온프레미스 VM 컴퓨팅. 배포 레포 deploy-vm.yml 하나가 compute 입력으로 플레이북을 고른다 (ansible/README.md)
+ONPREM_COMPUTES = ("onprem", "onprem-container")
+
+
 def vm_missing(values: dict[str, Any]) -> list[str]:
     """VM 배포에 꼭 필요한데 기본값이 없는 값. 비어 있지 않으면 구성안을 만들 수 없다."""
     missing = [] if values.get("runtime") else ["runtime"]
@@ -186,7 +190,7 @@ TEMPLATES: dict[str, Template] = {
     "onprem-container": Template(
         compute="onprem-container",
         name="onprem-container",
-        ready=False,
+        ready=True,
         fill=_vm_container_values,
         plan_name="기본형",
         summary="온프레미스 VM에서 레포의 Dockerfile로 이미지를 빌드해 Docker 컨테이너로 실행하는 구성",
