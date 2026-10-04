@@ -40,7 +40,8 @@ app/
   catalog.py       배포 템플릿 목록 (배포 레포 templates/와 이름·값 범위를 맞춘다, ready 스위치)
   signing.py       워크플로가 부르는 API의 서명 확인 (X-Hub-Signature-256)
   aws.py           Workload·Sandbox 계정 boto3 클라이언트 (WORKLOAD_AWS_*·SANDBOX_AWS_* 키, 읽기만)
-  infra_sync.py    인프라 갱신: 출처(지금은 AWS Workload·Sandbox)마다 InfraId 태그로 인프라를 읽어 infra_spaces를 채움 (provider 기록)
+  infra_sync.py    인프라 갱신: 출처(AWS Workload·Sandbox, 온프레미스 Proxmox)를 읽어 infra_spaces를 채움 (provider 기록)
+  onprem.py        Proxmox API 클라이언트: Cloudflare Access를 거쳐 freesia 태그 VM을 읽음 (읽기만)
   alb_rules.py     공용 ALB에서 앱을 나누는 경로·리스너 규칙 번호 (Multi-AZ 프론트·백엔드 배포, 템플릿 연결 전)
   monitoring.py    배포된 앱의 지표·로그 조회 (앱이 있는 계정의 CloudWatch 읽기만)
   github.py        GitHub 호출: 배포할 커밋 확인(토큰 없이), 배포 레포 워크플로 실행(workflow_dispatch)
@@ -76,42 +77,43 @@ alembic upgrade head
 10. **새 기능에는 테스트를 같이 추가**하고 `pytest` 통과를 확인한다.
 11. 트레이드오프가 있는 결정은 Notion Docs & Logs에 ADR로 남긴다 (한 ADR에 질문 하나).
 
-## 7. 결정 상태 (2026-09-30 기준)
+## 7. 결정 상태 (2026-10-04 기준)
 
 | 항목 | 상태 | 근거 |
 |---|---|---|
 | 주제: C(Space 분리) + E(선택 이유 시각화) | 확정 | ADR-001 |
 | AWS 계정 4분리 (Management/Platform/Workload/Sandbox), 플랫폼 DB·인프라 목록은 Platform 계정 | 확정 | ADR-004 |
-| 인프라는 사전 구축, 플랫폼은 조회만 | 회의 합의 | 2일차 2:27:19 |
-| 로그인 없음 (공용 목록 + public 레포 URL 입력). 2일차 합의(GitHub OAuth)를 보류 | 초안 | ADR-011 |
+| 인프라는 사전 구축, 플랫폼은 조회만 (AWS Workload·Sandbox VPC, 온프레미스 Proxmox VM) | 회의 합의 | 2일차 2:27:19 |
+| 로그인 없음 (공용 목록 + public 레포 URL 입력) | 초안 | ADR-011 |
 | 트리 시각화 유지, 사용자는 구성 요소 수정 불가 | 회의 합의 | 2일차 1:35:34 |
-| AI는 Terraform만 작성, 실행은 GitHub Actions, 키는 레포 시크릿 | 회의 합의 | 2일차 32:55 |
+| 고객 앱 배포: 백엔드 → `workflow_dispatch` → 배포 레포(workload-deploy) 워크플로 → 서명 콜백 | 확정 | ADR-009 |
+| AI는 템플릿을 고르고 값만 채움 (Terraform 파일을 쓰지 않음), 백엔드가 값 범위 검사 | 확정 | ADR-012 Option B |
+| 컴퓨팅: AWS `ecs-fargate`·`lambda`·`ec2`, 온프레미스 `onprem`·`onprem-container` | 확정 | ADR-020, 10/3~10/4 슬랙 |
+| 온프레미스: Proxmox VM, Cloudflare Access로 연결, 배포는 Ansible(`deploy-vm.yml`) | 확정 | 10/3 슬랙 (박준서·박소정 님) |
+| 인프라를 고르지 않으면 기본 인프라(`DefaultInfra=true` 태그, 지금 Sandbox), 목록에서는 숨김 | 회의 합의 | 10/3 슬랙 |
+| AI 모델: Bedrock `global.moonshotai.kimi-k3` (서울) | 확정 | ADR-006 |
 | 플랫폼 CI/CD: Actions → ECR → ECS Fargate | 확정 | ADR-002 |
-| 백엔드 Task Definition 구성, 마이그레이션은 배포 단계 일회성 Task, Task 2개 | 제안 | ADR-013 |
-| 샘플 인프라 / 컴퓨팅 후보 (Fargate·Lambda·EC2 vs Public·Private·HA) | 검토 중 | ADR-003 |
+| 백엔드 Task Definition 구성, 마이그레이션은 배포 단계 일회성 Task, Task 2개 | 확정 | ADR-013 |
 | AWS 리소스 네이밍·태깅 | 제안 | ADR-005 |
-| LLM 모델·호출 방식 (Bedrock) | 초안 | ADR-006 |
 | 플랫폼 DB: Amazon RDS for PostgreSQL (Multi-AZ) | 확정 | ADR-008 |
 | API 경로: 모든 API를 `/api` 아래에 둠 | 허들 합의 (정호원 님) | ADR-013 |
 
 ## 8. 미정 — 합의 전에는 구현하지 말 것
 
-- **서버용 GitHub 토큰**: 누구 계정으로 발급할지, Parameter Store 키 이름 (플랫폼 인프라 담당과 협의)
-- **비용 보호**: 동시 배포 1개 제한, 허용 레포 목록, 하루 횟수 상한 중 무엇을 적용할지
-- **고객 앱 배포 파이프라인**: 담당자·방식 미정 (Work Board "CI/CD 파이프라인 - 대상 서비스"). 후보: 백엔드 → GitHub Actions API(`workflow_dispatch`) + 콜백 (백엔드 추천안) / Jenkins / 백엔드 AWS SDK 직접
-- **AI 모델**: 모델 ID·리전 (강효승). 정해지면 Task Definition에 `AI_*` 환경변수, ECS 작업 역할에 Bedrock 권한 (정호원). 그전까지 `AI_MODEL_ID`가 비어 있으면 분석은 샘플 결과를 준다
-- **컴퓨팅 후보 목록**: ADR-003 결론 후 `compute` 값 확정
+- **비용 보호**: 로그인이 없어 누구나 배포할 수 있다. 동시 배포 수 제한, 허용 레포 목록, 하루 횟수 상한 중 무엇을 적용할지
+- **분석용 GitHub 읽기 토큰**: 없으면 서버 IP당 시간당 약 30번 분석. 누구 계정으로 발급할지
+- **Workload 키 권한 축소**: 지금 AdministratorAccess(코드는 읽기만 부름). 읽기 전용으로 줄이는 방식 (정호원 님)
+- **온프레미스 VM 여러 대**: 지금 `ONPREM_VM_HOST` 하나라 서비스 VM 1대 전제. VM마다 주소를 받는 규칙
 
 ## 9. 다음 작업 (백로그)
 
-API 모양은 `app/schemas.py`에 있다. 아래 순서로 실제 기능으로 바꾼다. 응답 모양은 유지한다. 테이블 설계는 `docs/erd.md`.
+API 모양은 `app/schemas.py`, 테이블 설계는 `docs/erd.md`, 진행 상황은 README "진행 상황"에 있다.
 
-1. ~~앱 Space DB 저장~~ (완료). 남은 것: 프론트 통합 화면이 저장소 API에 연결되면 등록된 저장소만 받기(`400 repository_not_registered`, 명세 6절)
-2. ~~인프라 Space 조회~~ (DB, 마이그레이션 0002로 3개 입력). 남은 것: 나머지 2종 실제 값, 태그 조회로 자동 채우기(선택)
-3. ~~레포 URL로 주요 파일 읽기~~ (완료, `app/ai/repo.py`, tarball). 남은 것: 서버용 GitHub 읽기 토큰(없으면 시간당 분석 약 30번)
-4. ~~AI 분석 요청·결과 저장·조회~~ (완료). 남은 것: 실제 모델 연결, 분석한 `commit_sha`를 배포에 쓰기
-5. 배포: DB 저장·콜백 수신(서명)·SSE·자원별 상태는 완료. 구성안 저장·워크플로용 값 조회 API(명세 8절)도 완료. 남은 것: 워크플로 실행(`workflow_dispatch`, GitHub 토큰), AI가 구성안 값 채우기(지금은 템플릿 기본값), 30분 시간 초과 처리. 연결 전까지 `DEPLOY_SIMULATE=true`로 가짜 진행을 기록한다
-6. 모니터링 조회 API (인프라 Space: 올라간 앱 목록 / 앱 Space: 메트릭·로그)
+1. 배포 30분 시간 초과 (마지막 콜백이 유실되면 지금은 "진행 중"으로 남음)
+2. AI 응답이 검사 규칙(V1~V9)에 걸리면 한 번 더 묻기 (강효승 님과)
+3. 온프레미스 모니터링 (Proxmox API의 VM CPU·메모리)
+4. 인프라·앱에 "지금 떠 있는지" 표시 (`live_app_count`, `is_live`)
+5. 프론트 통합 화면이 저장소 API에 연결되면 등록된 저장소만 받기 (`400 repository_not_registered`)
 
 인터페이스 초안은 `docs/handoff.md`의 "인터페이스 초안" 참고.
 
