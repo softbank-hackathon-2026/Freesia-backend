@@ -3,7 +3,7 @@ import re
 from datetime import datetime, timezone
 from typing import Annotated, Any, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, computed_field
 
 # https://github.com/{owner}/{repo} (끝의 / 와 .git은 허용하고 저장할 때 뗀다)
 GITHUB_REPO_URL = re.compile(r"^https://github\.com/([A-Za-z0-9-]+)/([A-Za-z0-9._-]+?)(?:\.git)?/?$")
@@ -301,6 +301,14 @@ class Deployment(BaseModel):
     plan_id: str | None = None
     source_deployment_id: str | None = None
     created_at: UtcDatetime
+    finished_at: UtcDatetime | None = Field(None, description="성공·실패로 끝난 시각 (마지막 콜백을 받은 서버 시각). 진행 중이면 null")
+
+    @computed_field(description="걸린 시간(초) = finished_at - created_at. 워크플로 대기 시간 포함. 진행 중이면 null")
+    @property
+    def duration_seconds(self) -> int | None:
+        if self.finished_at is None:
+            return None
+        return max(0, round((self.finished_at - self.created_at).total_seconds()))
 
 
 class DeploymentEvent(BaseModel):
