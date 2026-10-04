@@ -254,3 +254,45 @@ def test_heartbeat_while_waiting(client, real_mode, monkeypatch):
     lines = events(client, dep["id"])
     assert ": ping" in lines
     assert data(lines)[0]["step"] == "queued"
+
+
+# 걸린 시간: 끝난 시각과 초 단위 시간 (인프라와 상관없이 마지막 콜백으로 정해짐)
+
+
+def set_created_at(dep_id, seconds_ago):
+    from datetime import timedelta
+
+    from app import models
+    from app.ids import now
+    from tests.conftest import TestingSession
+
+    with TestingSession() as db:
+        db.get(models.Deployment, dep_id).created_at = now() - timedelta(seconds=seconds_ago)
+        db.commit()
+
+
+def test_duration_is_null_while_running(client, real_mode):
+    dep = start(client).json()
+    assert (dep["finished_at"], dep["duration_seconds"]) == (None, None)
+    callback(client, dep["id"], {"status": "building", "step": "build"})
+    got = client.get(f"/api/deployments/{dep['id']}").json()
+    assert (got["finished_at"], got["duration_seconds"]) == (None, None)
+
+
+@pytest.mark.parametrize("final", [
+    {"status": "success", "step": "done", "url": "http://app.example"},
+    {"status": "failed", "step": "build", "reason": "빌드 실패"},
+])
+def test_duration_after_finish(client, real_mode, final):
+    dep = start(client).json()
+    set_created_at(dep["id"], 111)
+    callback(client, dep["id"], final)
+    got = client.get(f"/api/deployments/{dep['id']}").json()
+    assert got["finished_at"].endswith("Z")
+    assert 110 <= got["duration_seconds"] <= 113
+
+
+def test_simulated_deploy_has_duration(client):
+    dep = start(client).json()
+    got = client.get(f"/api/deployments/{dep['id']}").json()
+    assert got["status"] == "success" and got["duration_seconds"] is not None
