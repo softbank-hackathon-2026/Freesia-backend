@@ -16,39 +16,49 @@ API 계약은 [백엔드 API 명세 (Notion)](https://app.notion.com/p/3ec8bee9a
 
 ```
 ① 통합       저장소 주소 등록
-② 앱 만들기  저장소 + 인프라(미리 지어 둔 것 중 선택) → 앱 ID 발급. AWS에는 아직 아무것도 안 생김
-③ AI 분석    코드를 보고 컴퓨팅 추천 (running → GET으로 다시 확인)
+② 앱 만들기  저장소 + 인프라 → 앱 ID 발급. 인프라를 고르지 않으면 기본 인프라(DefaultInfra 태그, 지금 Sandbox)
+             아직 아무 자원도 안 생김
+③ AI 분석    코드를 보고 인프라가 허용하는 컴퓨팅 중에서 추천하고 템플릿 값을 채움 (running → GET으로 다시 확인)
 ④ 구성안     고른 컴퓨팅의 템플릿 + 넣을 값 (ADR-012)
-⑤ 배포       백엔드가 GitHub에 workload-deploy 워크플로 실행 요청 → 워크플로가 빌드·배포
+⑤ 배포       백엔드가 GitHub에 workload-deploy 워크플로 실행 요청
+             AWS(Fargate·Lambda·EC2) → deploy.yml (Terraform) / 온프레미스(onprem·onprem-container) → deploy-vm.yml (Ansible)
 ⑥ 진행 상황  워크플로 콜백 → DB → SSE 6단계(queued → prepare → build → deploy → verify → done), 자원별 트리
+⑦ 운영       모니터링(지표·로그), 재배포(설정 유지·코드만 최신), 내리기(destroy.yml / destroy-vm.yml)
 ```
+
+| 인프라 출처 | 어디서 읽나 | 컴퓨팅 |
+|---|---|---|
+| AWS Workload 계정 (필수) | `InfraId` 태그 VPC (읽기 키 `WORKLOAD_AWS_*`) | `ecs-fargate`, `lambda`, `ec2` (공용 ALB가 있으면 Fargate는 `shared-alb`) |
+| AWS Sandbox 계정 (키 있을 때) | 같음 (`SANDBOX_AWS_*`) | 같음 |
+| 온프레미스 Proxmox (설정 있을 때) | Cloudflare Access → Proxmox API, `freesia` 태그 VM (`ONPREM_*`) | `onprem`(코드를 VM에서 빌드), `onprem-container`(Dockerfile로 Docker) |
 
 | 연동 대상 | 백엔드와 주고받는 것 |
 |---|---|
 | 프론트 (`Freesia-Frontend`) | 아래 API. 로그인 없음 |
-| AI (`app/ai`, 강효승 님) | 백엔드 안 함수 `run_analysis(repo_url, branch, computes)`. Bedrock 호출 |
+| AI (`app/ai`, 강효승 님) | 백엔드 안 함수 `run_analysis(repo_url, branch, computes)`. Bedrock 호출 (작업 역할 권한) |
 | 배포 워크플로 (`workload-deploy`, 박소정 님) | 백엔드 → GitHub `workflow_dispatch`. 워크플로 → 콜백, 구성안 값 조회 (`X-Hub-Signature-256` 서명) |
+| 온프레미스 (Proxmox, 정호원 님·박준서 님) | 백엔드 → Proxmox API 읽기만. VM 접속은 배포 워크플로가 함 |
 
 ## API
 
-🟢 진짜 데이터로 동작 · 🟡 API는 동작하지만 내용이 임시(샘플·기본값·가짜 진행) · 🟠 코드는 있지만 연결 대기
+🟢 진짜 데이터로 동작 · 🟡 API는 동작하지만 내용이 임시 · ⚪ 지원 안 함
 
 | 분류 | API | 상태 | 비고 |
 |---|---|---|---|
 | 상태 확인 | `GET /api/health`, `/api/health/db`, `/api/version.txt` | 🟢 | 배포 성공 판정, Target Group 헬스체크 |
 | 저장소 | `GET` `POST /api/repositories`, `DELETE /api/repositories/{id}` | 🟢 | public GitHub 주소만, 기본 브랜치 `main` |
-| 앱 | `GET` `POST /api/app-spaces`, `GET` `DELETE /api/app-spaces/{id}` | 🟢 | 당분간 등록 안 된 저장소도 받음. 삭제는 목록에서 숨기기, AWS에 떠 있으면 먼저 내려야 함 (`app_still_deployed`) |
-| 인프라 | `GET /api/infra-spaces`, `/api/infra-spaces/{id}`, `POST /api/infra-spaces/sync` | 🟢 | 목록을 볼 때마다 Workload 계정에서 `InfraId` 태그가 붙은 VPC·서브넷을 다시 읽어 DB를 채움(약 1초, AWS를 못 읽으면 저장된 목록). `sync`는 같은 갱신을 하고 실패를 `502`로 알림. `deployable_computes`로 배포 가능 여부 표시 |
-| AI 분석 | `POST` `GET /api/app-spaces/{id}/analysis` | 🟡 | `AI_MODEL_ID`가 없으면 샘플 결과 |
-| 구성안 | `POST /api/app-spaces/{id}/plans`, `GET ...?compute=` | 🟡 | 템플릿 `ecs-fargate/basic`, `lambda/basic`, `ec2/basic`. AI가 채운 값(Fargate만), 없으면 템플릿 기본값 |
-| 배포 | `POST /api/app-spaces/{id}/deployments` | 🟡 | `DEPLOY_SIMULATE=true`라 가짜 진행(약 8초). `false`면 `deploy.yml` 실행 |
-| | `GET /api/deployments/{id}`, `/events` (SSE) | 🟡 | 가짜 진행 결과 |
-| | `GET /api/deployments/{id}/resources` | 🟠 | 배포 시작 때 템플릿 자원을 "대기"로 미리 채움, 워크플로 계획이 오면 그걸로 바뀜 |
-| 내리기 | `POST /api/app-spaces/{id}/teardown` | 🟠 | `destroy.yml` 실행. 실제 워크플로로 배포된 적 있어야 함 (`not_deployed`). 결과는 앱의 `teardown_status` |
-| 워크플로 전용 | `POST /api/deployments/{id}/callback` | 🟠 | 서버 준비 완료(서명 키 연결). 워크플로 실행 후 동작 |
-| | `GET /api/plans/{plan_id}` | 🟠 | 같음 |
-| 모니터링 | `GET /api/app-spaces/{id}/metrics`, `/logs` | 🟠 | 떠 있는 실제 배포의 지표와 최근 로그. Fargate: CPU·메모리·응답 시간·요청·5xx / Lambda: 처리 시간·호출·오류 / EC2: CPU·로그(현재 서버만). 응답 칸은 같고 없는 값은 null. Workload 키로 CloudWatch 읽기만 |
-| | `POST /api/app-spaces/{id}/teardown/callback` | 🟠 | 내리기 결과 (`success` / `failed` + `reason`). 같은 서명 |
+| 인프라 | `GET /api/infra-spaces`, `/api/infra-spaces/{id}`, `POST /api/infra-spaces/sync` | 🟢 | 목록을 볼 때마다 출처(AWS Workload·Sandbox, 온프레미스)를 다시 읽음. `provider`(aws/onprem), `deployable_computes`. 기본 인프라는 목록에서 빠지고 상세는 됨. `sync`는 실패를 `502`로 알림 |
+| 앱 | `GET` `POST /api/app-spaces`, `GET` `DELETE /api/app-spaces/{id}` | 🟢 | `infra_id`를 비우면 기본 인프라(없으면 `400 no_default_infra`). 삭제는 목록에서 숨기기, 떠 있으면 먼저 내려야 함 (`app_still_deployed`) |
+| AI 분석 | `POST` `GET /api/app-spaces/{id}/analysis` | 🟢 | 실제 모델(`AI_MODEL_ID`). 비어 있으면 샘플. 응답은 검사 규칙 V1~V9를 통과해야 저장 |
+| 구성안 | `POST /api/app-spaces/{id}/plans`, `GET ...?compute=` | 🟢 | 템플릿: `ecs-fargate/basic`·`shared-alb`, `lambda/basic`, `ec2/basic`, `onprem`, `onprem-container`. AI 값, 없으면 기본값 |
+| 배포 | `POST /api/app-spaces/{id}/deployments` | 🟢 | AWS는 `deploy.yml`, 온프레미스는 `deploy-vm.yml` (`compute` 그대로 전달). `DEPLOY_SIMULATE=true`면 가짜 진행 |
+| | `GET /api/deployments/{id}`, `/events` (SSE) | 🟢 | |
+| | `GET /api/deployments/{id}/resources` | 🟢 | AWS는 배포 시작 때 템플릿 자원을 "대기"로 미리 채움. 온프레미스는 Ansible 작업이 자원 하나 (`ansible_task`) |
+| 재배포 | `GET /api/app-spaces/{id}/redeploy-context`, `POST .../redeployments` | 🟢 | 마지막 실제 성공 배포의 설정으로 브랜치 최신 커밋 배포 (아래 절) |
+| 내리기 | `POST /api/app-spaces/{id}/teardown` | 🟢 | provider로 `destroy.yml` / `destroy-vm.yml`. 실제로 배포된 적 있어야 함 (`not_deployed`). 결과는 앱의 `teardown_status` |
+| 모니터링 | `GET /api/app-spaces/{id}/metrics`, `/logs` | 🟢 | 앱이 있는 계정의 CloudWatch를 읽기만. Fargate: CPU·메모리·응답 시간·요청·5xx / Lambda: 처리 시간·호출·오류 / EC2: CPU·로그(현재 서버만). 온프레미스는 ⚪ `unsupported` |
+| 워크플로 전용 | `POST /api/deployments/{id}/callback`, `POST /api/app-spaces/{id}/teardown/callback` | 🟢 | 서명 확인. 프론트는 부르지 않음 |
+| | `GET /api/plans/{plan_id}` | 🟢 | 워크플로가 받아 가는 구성안 값 (AWS: VPC·서브넷·공용 ALB, 온프레미스: `vm_host`) |
 
 에러는 모두 `{"error": "코드", "message": "설명"}`입니다. 요청·응답 모양은 Swagger와 Notion 명세를 봐 주세요.
 
@@ -63,6 +73,7 @@ API 계약은 [백엔드 API 명세 (Notion)](https://app.notion.com/p/3ec8bee9a
 원본은 해당 앱의 가장 최근 실제 성공 배포(`status=success`, `run_id IS NOT NULL`)입니다. 이후 실패 기록은 원본을 바꾸지 않습니다. 해당 성공 배포의 구성안이 없거나 앱·컴퓨팅이 다르면 오래된 구성안으로 넘어가지 않고 `409 redeploy_unavailable`로 거절합니다. 가짜 진행·실행 ID 없는 과거 기록도 같은 오류입니다. 원본 SHA가 없는 기록은 `source_commit_sha: null`로 표시합니다.
 
 - 원본 성공 배포 또는 브랜치 HEAD가 검토 후 바뀌면 `409 redeploy_source_changed` / `redeploy_target_changed`: 다시 GET하고 사용자 확인을 새로 받습니다.
+- 내리기는 실패해도 자원을 일부 지웠을 수 있습니다. 그래서 원본 성공 배포는 결과와 상관없이 가장 최근 내리기 요청보다 뒤여야 합니다. 아니면 `409 not_deployed`로 분석·구성안부터 다시 하게 합니다. 내리기 기록에 시각이 없으면 `409 redeploy_unavailable`입니다. 요청 뒤에 새 실제 성공 배포가 생기면 다시 재배포할 수 있습니다.
 - 배포·내리기 진행 중이면 기존 `409 deployment_in_progress` / `teardown_in_progress`를 반환합니다. 완료된 내리기 이후 새 실제 성공 배포가 없으면 `409 not_deployed`이며 분석·구성안 선택부터 다시 진행합니다.
 - 현재 인프라·컴퓨팅의 준비 상태를 다시 검사합니다. GitHub SHA 조회 실패는 `502 github_error`이며 배포를 만들지 않습니다. dispatch 실패는 기존 배포 API와 같이 `201` 응답의 `failed` 배포로 기록됩니다.
 - 서버 PostgreSQL에서는 앱 행 잠금으로 일반 배포·재배포·내리기·삭제 접수를 직렬화합니다. SQLite 테스트는 순차 동작을 확인하며 PostgreSQL의 실제 동시 요청 잠금을 대체 검증하지 않습니다.
@@ -157,13 +168,15 @@ Freesia-backend/
 | `RUN_MIGRATIONS` | `true` | 시작할 때 마이그레이션. 서버는 `false` |
 | `CORS_ORIGINS` | `http://localhost:5173` | 쉼표로 여러 개 |
 | `APP_VERSION` | `dev` | 빌드 때 커밋 SHA (`/api/version.txt`) |
-| `DEPLOY_SIMULATE` | `true` | `true`면 워크플로 대신 가짜 진행 |
+| `DEPLOY_SIMULATE` | `true` | `true`면 워크플로 대신 가짜 진행. **서버는 `false`** (실제 배포) |
 | `DEPLOY_CALLBACK_SECRET` | 빈 값 | 콜백·값 조회 서명 키. 비어 있으면 모두 401 |
 | `GITHUB_DEPLOY_TOKEN` | 빈 값 | 배포 레포 워크플로 실행 토큰. 비어 있으면 진짜 배포·내리기가 실패로 기록됨 |
 | `DEPLOY_REPO`, `DEPLOY_REF`, `PUBLIC_API_BASE` | `softbank-hackathon-2026/workload-deploy`, `main`, `https://sbh.howon.me/api` | 실행할 배포 레포와 콜백 주소 |
-| `WORKLOAD_AWS_ACCESS_KEY_ID`, `WORKLOAD_AWS_SECRET_ACCESS_KEY` | 빈 값 | 모니터링용 Workload 계정 키 (CloudWatch 읽기만). 서버는 Parameter Store. `AWS_*` 이름을 쓰지 않음 |
+| `WORKLOAD_AWS_ACCESS_KEY_ID`, `WORKLOAD_AWS_SECRET_ACCESS_KEY` | 빈 값 | Workload 계정 키 (인프라 목록·모니터링, 읽기 API만 부름). 서버는 Parameter Store. `AWS_*` 이름을 쓰지 않음 (Bedrock은 작업 역할로 부름) |
 | `SANDBOX_AWS_ACCESS_KEY_ID`, `SANDBOX_AWS_SECRET_ACCESS_KEY` | 빈 값 | Sandbox 계정 읽기 키 (인프라 목록·모니터링). 비어 있으면 Sandbox는 읽지 않음. 서버는 Parameter Store |
-| `AI_MODEL_ID` | 빈 값 | 비어 있으면 분석은 샘플 결과 |
+| `ONPREM_API_URL`, `ONPREM_CF_CLIENT_ID`, `ONPREM_CF_CLIENT_SECRET`, `ONPREM_PVE_TOKEN_ID`, `ONPREM_PVE_TOKEN_SECRET` | 빈 값 | 온프레미스 Proxmox 읽기 (Cloudflare Access 서비스 토큰 + Proxmox API 토큰). 5개가 다 있어야 읽음. 서버는 Parameter Store |
+| `ONPREM_VM_HOST` | 빈 값 | 배포 워크플로가 cloudflared로 들어갈 서비스 VM 호스트 (지금 `vpn.howon.me`). 비어 있으면 온프레미스 인프라는 보이지만 배포는 막힘 |
+| `AI_MODEL_ID` | 빈 값 | 비어 있으면 분석은 샘플 결과. 서버는 `global.moonshotai.kimi-k3` |
 | `AI_AWS_REGION`, `AI_TIMEOUT_SECONDS`, `AI_SCHEMA_OUTPUT` | `ap-northeast-2`, `60`, `true` | AI 호출 설정 |
 
 ## 로컬 실행·테스트
@@ -196,16 +209,15 @@ alembic upgrade head
 ## 진행 상황
 
 - [x] 저장소·앱·인프라·분석·구성안·배포 DB 저장, 서버 Task 2개
-- [x] 콜백·자원별 상태·워크플로 값 조회 API (서명 확인)
-- [x] AI 분석 모듈 연결 (모델 없으면 샘플)
-- [x] 프론트 연동 확인 (`?source=api`, 저장소 등록 → 배포 완료까지)
-- [x] 서명 키·GitHub 토큰 Task Definition 연결
-- [x] 워크플로 실행 코드(`deploy.yml`, `destroy.yml`). `DEPLOY_SIMULATE=false`로 켬
-- [ ] 진짜 워크플로로 한 번 배포해 보고 가짜 진행 끄기
-- [ ] AI 모델 연결, AI가 구성안 값 채우기 (강효승 님)
-- [ ] 나머지 인프라 2종 실제 값 (박준서 님)
-- [ ] 가짜 진행이 서버 교체로 멈추지 않게, 30분 시간 초과
-- [ ] 모니터링(지표·로그) API, 내리기 완료 콜백(배포 레포와 협의)
-
-### Redeployment review follow-up
-A teardown attempt can partially remove resources even when it fails. The simple redeployment source must be newer than the latest teardown request, regardless of its final status; otherwise the API returns `409 not_deployed` and requires normal analysis/configuration. Missing timestamps in teardown history return `409 redeploy_unavailable`. This also prevents a later failed teardown from hiding an earlier successful destroy. Fresh actual successful deployment after the request restores eligibility.
+- [x] 실제 AI 모델로 분석하고 템플릿 값 채우기 (강효승 님)
+- [x] 실제 배포·내리기·콜백·SSE·자원 트리 (배포 시작부터 트리 표시)
+- [x] AWS 컴퓨팅 3종 + 고가용성 공용 ALB(`demo.howon.me`, 경로로 앱 나누기)
+- [x] 인프라 자동 갱신: AWS Workload·Sandbox, 온프레미스 Proxmox. 기본 인프라(`DefaultInfra`)
+- [x] 온프레미스 `onprem`·`onprem-container` 배포·내리기 (실제 VM에서 확인)
+- [x] 모니터링(AWS), 재배포
+- [ ] 배포 30분 시간 초과 (콜백이 끊기면 지금은 "진행 중"으로 남음)
+- [ ] AI 응답이 검사 규칙에 걸리면 한 번 더 묻기 ("분석에 실패했어요"가 간혹 나옴)
+- [ ] 온프레미스 모니터링 (Proxmox VM CPU·메모리)
+- [ ] 인프라·앱에 "지금 떠 있는지" 표시 (`live_app_count`, `is_live`)
+- [ ] Workload 키를 읽기 전용 권한으로 줄이기 (지금 AdministratorAccess, 정호원 님)
+- [ ] 비용 보호 (로그인이 없어 배포 횟수 제한 없음)
