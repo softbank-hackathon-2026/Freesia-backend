@@ -61,7 +61,7 @@ def test_vm_deploy_runs_deploy_vm_workflow(client, real_mode, gh, onprem):
     [req] = dispatches(gh)
     assert req.url.path.endswith("/actions/workflows/deploy-vm.yml/dispatches")
     inputs = json.loads(req.content)["inputs"]
-    assert "compute" not in inputs  # deploy.yml 입력에서 compute만 뺀다
+    assert inputs["compute"] == "vm"  # 백엔드 onprem = 워크플로 vm (워크플로는 vm·vm-container만 받는다)
     assert (inputs["infra_id"], inputs["application_id"]) == (ONPREM, app_id)
     # 워크플로가 받아 가는 구성안: values.yaml + VM 주소만
     plan = workflow_plan(client, inputs["plan_id"])

@@ -31,6 +31,8 @@ from app.routers.deployments import _raw_body
 from app.routers.infra_spaces import is_deployable
 
 logger = logging.getLogger(__name__)
+# 백엔드 컴퓨팅 → 배포 레포 deploy-vm.yml의 compute 입력 (vm: 코드를 VM에 설치, vm-container: Dockerfile을 VM에서 실행)
+VM_WORKFLOW_COMPUTE = {"onprem": "vm"}
 router = APIRouter(prefix="/app-spaces", tags=["app-spaces"])
 
 # 내리기 콜백이 이 시간 안에 오지 않으면 다시 요청할 수 있다 (Destroy 워크플로 제한 시간 20분 + 대기열)
@@ -393,9 +395,10 @@ def _start_workflow(db: Session, space: models.AppSpace, dep: models.Deployment)
             "plan_id": dep.plan_id,
             "callback_url": f"{get_settings().public_api_base}/deployments/{dep.id}/callback",
         }
-        if dep.compute == "onprem":
-            # 온프레미스는 Ansible 워크플로. 입력은 deploy.yml과 같고 compute만 없다 (10/3 박소정 님)
-            inputs.pop("compute")
+        if dep.compute in VM_WORKFLOW_COMPUTE:
+            # 온프레미스는 Ansible 워크플로(deploy-vm.yml). 워크플로의 compute 이름으로 바꿔 넘긴다.
+            # 기본값(vm)에 기대지 않는다: 워크플로 기본값이 바뀌어도 백엔드가 고른 방식으로 배포된다
+            inputs["compute"] = VM_WORKFLOW_COMPUTE[dep.compute]
             github.dispatch("deploy-vm.yml", inputs)
         else:
             github.dispatch("deploy.yml", inputs)
