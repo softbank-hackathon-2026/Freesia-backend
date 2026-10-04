@@ -73,79 +73,120 @@ API 계약은 [백엔드 API 명세 (Notion)](https://app.notion.com/p/3ec8bee9a
 
 ## 폴더 구조
 
+```mermaid
+graph LR
+  FE[프론트] --> R[routers/<br/>API /api]
+  R --> IS[infra_sync.py<br/>인프라 갱신]
+  IS --> AWS[(AWS<br/>Workload · Sandbox)]
+  IS --> PVE[(Proxmox<br/>온프레미스)]
+  R --> AN[analysis.py · ai/<br/>AI 분석]
+  AN --> BR[(Bedrock)]
+  R --> CAT[catalog.py<br/>구성안]
+  R --> GH[github.py<br/>워크플로 실행]
+  GH --> WF[workload-deploy<br/>deploy.yml · deploy-vm.yml]
+  WF -- 콜백 --> R
+  R --> MON[monitoring.py<br/>지표 · 로그]
+  MON --> AWS
+  R --> DB[(DB<br/>models/)]
 ```
-Freesia-backend/
-├── app/                          FastAPI 앱 (모든 API는 /api 아래)
-│   ├── main.py                   앱 생성, CORS, 라우터 등록, 공통 에러 형식 {"error", "message"}
-│   ├── config.py                 환경변수 설정 (Settings). 서버 값은 Parameter Store에서 주입, 코드에 비밀값 없음
-│   ├── db.py                     DB 연결. DATABASE_URL 하나로 접속 (로컬 Compose / 서버 RDS / 테스트 SQLite)
-│   ├── schemas.py                API 요청·응답 형식. 프론트·AI·배포 워크플로와 맞추는 계약 (Compute 값 목록도 여기)
-│   ├── ids.py                    ID(소문자·숫자·하이픈)와 UTC 시각 생성
-│   │
-│   │   ── 인프라 (조회만) ──
-│   ├── infra_sync.py             인프라 갱신. 출처(Source) 목록을 돌며 읽어 infra_spaces를 채움
-│   │                               · 출처: AWS Workload(필수) · AWS Sandbox(키 있을 때) · 온프레미스 Proxmox(설정 있을 때)
-│   │                               · 출처마다 provider(aws/onprem) 기록, 한 출처가 실패해도 나머지는 갱신
-│   │                               · VPC 태그: InfraId(필수) DisplayName·Description·Network·Computes·DefaultInfra
-│   │                               · 공용 ALB(Multi-AZ)와 앱 서브넷도 찾음. 목록을 볼 때마다 갱신 (5초 쿨다운)
-│   ├── aws.py                    고객 앱 계정 boto3 클라이언트. 계정별 키(WORKLOAD_AWS_*·SANDBOX_AWS_*), 읽기 API만 부름
-│   ├── onprem.py                 Proxmox API 클라이언트. Cloudflare Access를 거쳐 VM 목록을 읽고 freesia 태그 VM만 인프라로
-│   │
-│   │   ── AI 분석 ──
-│   ├── analysis.py               분석 실행·저장. 백그라운드로 돌고, 오래 running이면 failed로 정리 (멈춤 방지)
-│   ├── ai/                       AI 모듈 (강효승 님)
-│   │   ├── repo.py               public 레포를 커밋 SHA로 고정하고 tarball 하나로 받아 메모리에서 읽음 (크기 상한)
-│   │   ├── analyze.py            Bedrock 모델 호출·응답 검증. 1단계 핵심 파일 → 필요하면 2단계 전체 코드
-│   │   └── template_fields.py    컴퓨팅별로 AI가 채울 템플릿 값 양식 (배포 레포 variables.tf·vm_plan.py와 맞춤)
-│   ├── mock_data.py              샘플 분석 결과 (AI_MODEL_ID가 비어 있을 때)
-│   │
-│   │   ── 구성안·배포 ──
-│   ├── catalog.py                배포 템플릿 목록과 값 범위 검사, ready 스위치
-│   │                               · AWS: ecs-fargate/basic · ecs-fargate/shared-alb · lambda/basic · ec2/basic
-│   │                               · 온프레미스: onprem · onprem-container (ONPREM_COMPUTES)
-│   ├── alb_rules.py              공용 ALB에서 앱을 나누는 경로(/, /api)와 리스너 규칙 번호. 겹치면 409
-│   ├── github.py                 GitHub 호출: 배포할 커밋 확인, 배포 레포 워크플로 실행(workflow_dispatch), 템플릿 자원 목록 읽기
-│   ├── deploy.py                 배포 진행 기록: 단계 이벤트(SSE용), 자원별 상태(트리), 트리 미리 채우기, 가짜 진행
-│   ├── signing.py                워크플로가 부르는 API의 서명 확인 (X-Hub-Signature-256, HMAC-SHA256)
-│   ├── monitoring.py             배포된 앱의 지표·로그. 앱이 있는 계정의 CloudWatch를 읽기만 (온프레미스는 unsupported)
-│   │
-│   ├── models/                   SQLAlchemy 모델 (테이블 설계는 docs/erd.md)
-│   │   ├── repository.py         repositories: 등록된 저장소
-│   │   ├── infra_space.py        infra_spaces: 인프라 (provider, VPC·서브넷, 공용 ALB, vm_host, is_default)
-│   │   ├── app_space.py          app_spaces: 앱 (레포, 인프라, 공용 ALB 경로, 내리기 상태, 삭제 시각)
-│   │   ├── analysis.py           analyses: AI 분석 결과 (분석한 커밋 SHA 포함)
-│   │   ├── plan.py               plans: 구성안 = 템플릿 + 값
-│   │   └── deployment.py         deployments · deployment_events(SSE) · deployment_resources(트리)
-│   │
-│   └── routers/                  API 엔드포인트 (prefix /api)
-│       ├── health.py             GET /health · /health/db · /version.txt (ALB 헬스체크, 배포 성공 판정)
-│       ├── repositories.py       GET·POST /repositories, DELETE /repositories/{id}
-│       ├── infra_spaces.py       GET /infra-spaces(볼 때마다 갱신, 기본 인프라 숨김) · POST /infra-spaces/sync · GET /infra-spaces/{id}
-│       ├── app_spaces.py         앱 만들기·목록·상세·삭제 / 분석 / 구성안 / 배포 시작 / 재배포 / 내리기(+콜백)
-│       │                           · 배포: AWS는 deploy.yml, 온프레미스(onprem·onprem-container)는 deploy-vm.yml
-│       │                           · 내리기: provider로 destroy.yml / destroy-vm.yml
-│       ├── deployments.py        GET /deployments/{id} · /resources(트리) · /events(SSE) · POST /callback(워크플로, 서명)
-│       ├── plans.py              GET /plans/{plan_id}: 워크플로가 받아 가는 구성안 값 (서명, 프론트는 안 부름)
-│       └── monitoring.py         GET /app-spaces/{id}/metrics · /logs
-│
-├── alembic/                      DB 마이그레이션 (컬럼 추가만, 삭제·이름 변경 금지)
-│   ├── env.py                    DATABASE_URL로 접속
-│   └── versions/                 0001~0014
-├── tests/                        pytest (SQLite 메모리 DB). GitHub·AWS·Proxmox·AI는 가짜로 바꿔 끼움 (conftest.py)
-│
-├── .github/workflows/
-│   ├── ci.yml                    PR·main: 테스트, 마이그레이션 검사, 도커 빌드
-│   └── deploy.yml                main 머지 시: ECR에 이미지 → 마이그레이션 일회성 Task → ECS Fargate(Task 2개) 교체
-├── .aws/task-definition.json     서버 Task Definition. 환경변수와 Parameter Store 비밀값 연결
-├── Dockerfile · entrypoint.sh    서버 이미지. RUN_MIGRATIONS=true면 시작할 때 마이그레이션 (로컬 기본값)
-├── docker-compose.yml            로컬 실행 (백엔드 + Postgres)
-├── .env.example                  환경변수 목록 (값은 비움, .env는 커밋하지 않음)
-├── requirements.txt · requirements-dev.txt
-├── AGENTS.md                     작업 규칙 (AI 에이전트·팀원)
-└── docs/
-    ├── erd.md                    테이블 설계
-    └── handoff.md                논의·결정 정리
-```
+
+### ⚙️ 앱 기본
+| 파일 | 하는 일 |
+|---|---|
+| `app/main.py` | 앱 생성, CORS, 라우터 등록, 공통 에러 형식 `{"error", "message"}` |
+| `app/config.py` | 환경변수 설정. 서버 값은 Parameter Store에서 주입, 코드에 비밀값 없음 |
+| `app/db.py` | DB 연결. `DATABASE_URL` 하나로 접속 (로컬 Compose / 서버 RDS / 테스트 SQLite) |
+| `app/schemas.py` | API 요청·응답 형식. 프론트·AI·배포 워크플로와 맞추는 계약 (Compute 값 목록도 여기) |
+| `app/ids.py` | ID(소문자·숫자·하이픈)와 UTC 시각 생성 |
+
+### 🏗️ 인프라 (조회만)
+| 파일 | 하는 일 |
+|---|---|
+| `app/infra_sync.py` | 출처(Source) 목록을 돌며 인프라를 읽어 `infra_spaces`를 채움. 목록을 볼 때마다 갱신 (5초 쿨다운) |
+| `app/aws.py` | 고객 앱 계정 boto3 클라이언트. 계정별 키(`WORKLOAD_AWS_*`·`SANDBOX_AWS_*`), 읽기 API만 부름 |
+| `app/onprem.py` | Proxmox API 클라이언트. Cloudflare Access를 거쳐 VM 목록을 읽고 `freesia` 태그 VM만 인프라로 |
+
+<details>
+<summary>인프라 갱신 자세히</summary>
+
+- 출처: AWS Workload(필수) · AWS Sandbox(키 있을 때) · 온프레미스 Proxmox(설정 있을 때)
+- 출처마다 `provider`(aws / onprem) 기록. 한 출처가 실패해도 나머지는 갱신
+- VPC 태그: `InfraId`(필수) · `DisplayName` · `Description` · `Network` · `Computes` · `DefaultInfra`
+- 공용 ALB(Multi-AZ)와 앱 서브넷도 찾음
+
+</details>
+
+### 🤖 AI 분석
+| 파일 | 하는 일 |
+|---|---|
+| `app/analysis.py` | 분석 실행·저장. 백그라운드로 돌고, 오래 `running`이면 `failed`로 정리 (멈춤 방지) |
+| `app/ai/repo.py` | public 레포를 커밋 SHA로 고정하고 tarball 하나로 받아 메모리에서 읽음 (크기 상한) |
+| `app/ai/analyze.py` | Bedrock 모델 호출·응답 검증. 1단계 핵심 파일 → 필요하면 2단계 전체 코드 |
+| `app/ai/template_fields.py` | 컴퓨팅별로 AI가 채울 템플릿 값 양식 (배포 레포 `variables.tf`·`vm_plan.py`와 맞춤) |
+| `app/mock_data.py` | 샘플 분석 결과 (`AI_MODEL_ID`가 비어 있을 때) |
+
+> `app/ai/`는 강효승 님 담당입니다.
+
+### 🚀 구성안·배포
+| 파일 | 하는 일 |
+|---|---|
+| `app/catalog.py` | 배포 템플릿 목록과 값 범위 검사, ready 스위치 |
+| `app/alb_rules.py` | 공용 ALB에서 앱을 나누는 경로(`/`, `/api`)와 리스너 규칙 번호. 겹치면 409 |
+| `app/github.py` | GitHub 호출: 배포할 커밋 확인, 배포 레포 워크플로 실행(`workflow_dispatch`), 템플릿 자원 목록 읽기 |
+| `app/deploy.py` | 배포 진행 기록: 단계 이벤트(SSE용), 자원별 상태(트리), 트리 미리 채우기, 가짜 진행 |
+| `app/signing.py` | 워크플로가 부르는 API의 서명 확인 (`X-Hub-Signature-256`, HMAC-SHA256) |
+| `app/monitoring.py` | 배포된 앱의 지표·로그. 앱이 있는 계정의 CloudWatch를 읽기만 (온프레미스는 `unsupported`) |
+
+<details>
+<summary>템플릿 목록</summary>
+
+- AWS: `ecs-fargate/basic` · `ecs-fargate/shared-alb` · `lambda/basic` · `ec2/basic` → `deploy.yml`
+- 온프레미스: `onprem` · `onprem-container` (`ONPREM_COMPUTES`) → `deploy-vm.yml`
+
+</details>
+
+### 🗄️ 데이터 (`app/models/`, 설계는 [docs/erd.md](docs/erd.md))
+| 파일 | 테이블 |
+|---|---|
+| `repository.py` | `repositories`: 등록된 저장소 |
+| `infra_space.py` | `infra_spaces`: 인프라 (provider, VPC·서브넷, 공용 ALB, vm_host, is_default) |
+| `app_space.py` | `app_spaces`: 앱 (레포, 인프라, 공용 ALB 경로, 내리기 상태, 삭제 시각) |
+| `analysis.py` | `analyses`: AI 분석 결과 (분석한 커밋 SHA 포함) |
+| `plan.py` | `plans`: 구성안 = 템플릿 + 값 |
+| `deployment.py` | `deployments` · `deployment_events`(SSE) · `deployment_resources`(트리) |
+
+### 🔌 API (`app/routers/`, 모두 `/api` 아래)
+| 파일 | 엔드포인트 |
+|---|---|
+| `health.py` | `GET /health` · `/health/db` · `/version.txt` (ALB 헬스체크, 배포 성공 판정) |
+| `repositories.py` | `GET`·`POST /repositories`, `DELETE /repositories/{id}` |
+| `infra_spaces.py` | `GET /infra-spaces`(볼 때마다 갱신, 기본 인프라 숨김) · `POST /infra-spaces/sync` · `GET /infra-spaces/{id}` |
+| `app_spaces.py` | 앱 만들기·목록·상세·삭제 / 분석 / 구성안 / 배포 시작 / 재배포 / 내리기(+콜백) |
+| `deployments.py` | `GET /deployments/{id}` · `/resources`(트리) · `/events`(SSE) · `POST /callback`(워크플로, 서명) |
+| `plans.py` | `GET /plans/{plan_id}`: 워크플로가 받아 가는 구성안 값 (서명, 프론트는 안 부름) |
+| `monitoring.py` | `GET /app-spaces/{id}/metrics` · `/logs` |
+
+<details>
+<summary>배포·내리기 분기</summary>
+
+- 배포: AWS는 `deploy.yml`, 온프레미스(`onprem`·`onprem-container`)는 `deploy-vm.yml`
+- 내리기: 인프라 `provider`로 `destroy.yml` / `destroy-vm.yml`
+
+</details>
+
+### 🛠️ 운영·기타
+| 경로 | 하는 일 |
+|---|---|
+| `alembic/` | DB 마이그레이션 (컬럼 추가만, 삭제·이름 변경 금지). `versions/` 0001~0014 |
+| `tests/` | pytest (SQLite 메모리 DB). GitHub·AWS·Proxmox·AI는 가짜로 바꿔 끼움 (`conftest.py`) |
+| `.github/workflows/ci.yml` | PR·main: 테스트, 마이그레이션 검사, 도커 빌드 |
+| `.github/workflows/deploy.yml` | main 머지 시: ECR에 이미지 → 마이그레이션 일회성 Task → ECS Fargate(Task 2개) 교체 |
+| `.aws/task-definition.json` | 서버 Task Definition. 환경변수와 Parameter Store 비밀값 연결 |
+| `Dockerfile` · `entrypoint.sh` | 서버 이미지. `RUN_MIGRATIONS=true`면 시작할 때 마이그레이션 (로컬 기본값) |
+| `docker-compose.yml` | 로컬 실행 (백엔드 + Postgres) |
+| `.env.example` | 환경변수 목록 (값은 비움, `.env`는 커밋하지 않음) |
+| `AGENTS.md` | 작업 규칙 (AI 에이전트·팀원) |
+| `docs/` | `erd.md` 테이블 설계 · `handoff.md` 논의·결정 정리 |
 
 ## 환경변수
 
